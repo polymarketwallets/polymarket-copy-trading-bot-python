@@ -28,6 +28,9 @@ T = TypeVar("T")
 # an unconfirmed order that stays unmatched after this many lookups (and 5 minutes) had no fill
 RECHECK_ATTEMPTS = 5
 RECHECK_MIN_AGE_MS = 5 * 60_000
+# a balance too low to sell must hold for this many readings and this long before the exit gives up
+BALANCE_CONFIRM_ATTEMPTS = 5
+BALANCE_CONFIRM_MS = 10 * 60_000
 # an order that cannot be looked up for a day is surrendered to the operator
 RECHECK_GIVE_UP_MS = 24 * 3600_000
 
@@ -365,6 +368,12 @@ class CopyEngine:
         if available < shares:
             shares = available if available > 0 else 0
         if shares <= 0:
+            # The balance endpoint can lag a fill we have just booked (a late BUY, a fresh reconcile). One reading of
+            # "not there" is not proof: retry, and only give up once it has held for a while.
+            settled = exit_["attempts"] + 1 >= BALANCE_CONFIRM_ATTEMPTS and self.now() - exit_["firstAt"] >= BALANCE_CONFIRM_MS
+            if not settled or self._pending_buy(target, token_id):
+                return retry("exit_retry_zero_balance" if balance == 0 else "exit_retry_balance_short",
+                             balance=from_micro(balance), bookedToOthers=from_micro(others))
             if balance == 0:
                 state.drop(target, token_id)
                 return done("exit_no_balance")

@@ -388,8 +388,48 @@ async def test_blocks_and_asks_for_reconcile_when_all_left_is_others(tmp_path):
     await h.engine.on_fill(fill(entityId=T2), WS)
     h.ex.balance = 19_000_000
     await h.engine.on_fill(fill(entityId=T1, side="SELL"), WS)
+    assert h.last()["decision"] == "exit_retry_balance_short"  # could be a lagging balance
+    for _ in range(10):
+        if not h.state.pending_exits():
+            break
+        h.clock["t"] += 5 * 60_000
+        await h.engine.tick()
     assert h.ex.sells == []
     assert h.last()["decision"] == "exit_blocked_reconcile"
+
+
+async def test_zero_balance_right_after_a_late_fill_is_not_nothing_to_sell(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.ex.buy_result = killed()
+    await h.engine.on_fill(fill(), WS)
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    h.ex.late_fill = TradeFill(19_000_000, 9_690_000, 0, 0, ["o9"])
+    h.ex.balance = 0  # the balance endpoint has not caught up
+    h.clock["t"] += 1_000
+    await h.engine.tick()  # books the late BUY, exit sees 0
+    assert h.state.position(T1, "TOK")["shares"] == "19000000"
+    assert len(h.state.pending_exits()) == 1
+    again = h.restart()  # …and it survives a restart
+    h.ex.balance = 19_000_000
+    h.clock["t"] += 5_000
+    await again.tick()
+    assert h.ex.sells == [(to_micro("0.49"), 19_000_000)]
+    assert BotState(h.dir, "live").positions() == []
+
+
+async def test_zero_balance_for_10_minutes_finally_closes_the_books(tmp_path):
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(), WS)
+    h.ex.balance = 0
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    assert len(h.state.positions()) == 1
+    for _ in range(10):
+        if not h.state.pending_exits():
+            break
+        h.clock["t"] += 5 * 60_000
+        await h.engine.tick()
+    assert h.state.positions() == []
+    assert h.last()["decision"] == "exit_no_balance"
 
 
 async def test_transient_failure_is_retried_until_the_exit_happens(tmp_path):

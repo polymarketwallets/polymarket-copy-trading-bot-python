@@ -368,7 +368,14 @@ class PolymarketGateway:
     async def token_balance(self, token_id: str) -> int:
         from py_clob_client_v2 import AssetType, BalanceAllowanceParams
 
-        r = await asyncio.to_thread(self._require_clob().get_balance_allowance, BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id))
+        clob = self._require_clob()
+        params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
+        # the CLOB caches balances server-side; ask it to re-read the chain first (best effort)
+        try:
+            await asyncio.to_thread(clob.update_balance_allowance, params)
+        except Exception:
+            pass  # read what it has
+        r = await asyncio.to_thread(clob.get_balance_allowance, params)
         if isinstance(r, dict) and (r.get("error") or r.get("errorMsg")):
             raise RuntimeError(str(r.get("errorMsg") or r.get("error")))
         return _to_micro_balance(r["balance"]) if isinstance(r, dict) and r.get("balance") else 0
