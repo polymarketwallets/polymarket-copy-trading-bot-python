@@ -14,7 +14,7 @@ from .config import Config, TargetConfig
 from .engine import CopyEngine
 from .log import Logger
 from .polymarket import PolymarketGateway
-from .state import BotState
+from .state import BotState, InstanceLock
 from .units import fmt_usd, to_micro
 
 _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -73,6 +73,16 @@ async def run(cfg: Config, log: Logger) -> int:
         from dataclasses import replace
         pm_cfg = replace(pm_cfg, privateKey=None)
     exchange = PolymarketGateway(pm_cfg, log)
+    # before anything reads the state: two bots on one state would each send the same order
+    lock = InstanceLock(cfg.dataDir, cfg.mode)
+    lock.acquire()
+    try:
+        return await _run_locked(cfg, log, client, exchange)
+    finally:
+        lock.release()
+
+
+async def _run_locked(cfg: Config, log: Logger, client: AsyncClient, exchange: PolymarketGateway) -> int:
     state = BotState(cfg.dataDir, cfg.mode)
 
     log.info(f"pmwallets-copytrade starting in {cfg.mode.upper()} mode", {"state": str(state.file), "decisions": str(state.decisions_file)})
@@ -101,8 +111,6 @@ async def run(cfg: Config, log: Logger) -> int:
         t = e["type"]
         if t == "hello":
             log.info("connected to the PMWallets fill stream", {"session": e["session"]})
-        elif t == "gap" and e.get("skipped"):
-            log.info("reconnected before any fill was handled; nothing to replay")
         elif t == "gap":
             log.warn("missed fills detected; replaying from the last one handled", {"reason": e["reason"], "fromBlock": e["fromBlock"]})
         elif t == "replayed" and e.get("delivered"):
@@ -121,14 +129,20 @@ async def run(cfg: Config, log: Logger) -> int:
     stream = FillStream(client=client, on_fill=engine.on_fill, on_event=on_event,
                         store=FileStateStore(Path(cfg.dataDir) / f"stream.{cfg.mode}.json"))
 
+    if state.pending_orders() or state.pending_exits():
+        log.info("resuming unfinished work from the last run", {"unconfirmedOrders": len(state.pending_orders()), "exits": len(state.pending_exits())})
     await engine.sweep_settled()
+    await engine.tick()
 
-    async def sweeper() -> None:
+    async def every(seconds: float, fn: Any) -> None:
         while True:
-            await asyncio.sleep(600)
-            await engine.sweep_settled()
+            await asyncio.sleep(seconds)
+            try:
+                await fn()
+            except Exception as err:  # a periodic job must not die on one failure
+                log.error("periodic job failed", {"error": str(err)})
 
-    sweep_task = asyncio.create_task(sweeper())
+    tasks = [asyncio.create_task(every(600, engine.sweep_settled)), asyncio.create_task(every(15, engine.tick))]
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(NotImplementedError):  # Windows
@@ -138,10 +152,11 @@ async def run(cfg: Config, log: Logger) -> int:
         await stop_event.wait()
     finally:
         log.info("stopping…")
-        sweep_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await sweep_task
-        await engine.stop()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await stream.stop()
         await client.aclose()
     return exit_code["code"]

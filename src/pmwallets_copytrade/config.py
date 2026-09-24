@@ -90,7 +90,7 @@ def substitute_env(text: str, env: Optional[Mapping[str, str]] = None) -> str:
 
 def _num(v: Any, path: str, lo: float, hi: float) -> float:
     n = v
-    if isinstance(v, str):
+    if isinstance(v, str) and v.strip() != "":
         try:
             n = float(v)
         except ValueError:
@@ -98,6 +98,13 @@ def _num(v: Any, path: str, lo: float, hi: float) -> float:
     if isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) or n < lo or n > hi:
         raise ValueError(f"{path} must be a number in [{lo:g}, {hi:g}], got {v!r}")
     return n
+
+
+def _int(v: Any, path: str, lo: float, hi: float) -> int:
+    n = _num(v, path, lo, hi)
+    if n != int(n):
+        raise ValueError(f"{path} must be a whole number, got {v!r}")
+    return int(n)
 
 
 def _merge(cls: Any, raw: Optional[Mapping[str, Any]], **base: Any) -> Any:
@@ -120,9 +127,9 @@ def build_config(raw: Mapping[str, Any]) -> Config:
         tc = TargetConfig(entity=t["entity"].lower() if _ADDRESS.match(t["entity"]) else t["entity"],
                           orderSizeUsdc=t.get("orderSizeUsdc"), maxBuysPerOutcome=t.get("maxBuysPerOutcome"))
         if tc.orderSizeUsdc is not None:
-            _num(tc.orderSizeUsdc, f"targets[{i}].orderSizeUsdc", 1, 1_000_000)
+            tc.orderSizeUsdc = _num(tc.orderSizeUsdc, f"targets[{i}].orderSizeUsdc", 1, 1_000_000)
         if tc.maxBuysPerOutcome is not None:
-            _num(tc.maxBuysPerOutcome, f"targets[{i}].maxBuysPerOutcome", 1, 1000)
+            tc.maxBuysPerOutcome = _int(tc.maxBuysPerOutcome, f"targets[{i}].maxBuysPerOutcome", 1, 1000)
         targets.append(tc)
 
     c = Config(
@@ -140,19 +147,20 @@ def build_config(raw: Mapping[str, Any]) -> Config:
         raise ValueError("pmwallets.apiKey is required (pmw_…, from https://pmwallets.com/keys)")
 
     cp = c.copy
-    _num(cp.orderSizeUsdc, "copy.orderSizeUsdc", 1, 1_000_000)
-    _num(cp.maxBuysPerOutcome, "copy.maxBuysPerOutcome", 1, 1000)
-    _num(cp.maxOpenPositions, "copy.maxOpenPositions", 1, 100_000)
-    _num(cp.maxOpenPositionsPerTarget, "copy.maxOpenPositionsPerTarget", 1, 100_000)
-    _num(cp.maxFillAgeSec, "copy.maxFillAgeSec", 1, 86_400)
-    _num(cp.minTargetNotionalUsdc, "copy.minTargetNotionalUsdc", 0, 1_000_000_000)
-    _num(cp.minPrice, "copy.minPrice", 0, 1)
-    _num(cp.maxPrice, "copy.maxPrice", 0, 1)
-    _num(cp.maxSlippage, "copy.maxSlippage", 0, 1)
-    _num(cp.minBookDepthUsdc, "copy.minBookDepthUsdc", 0, 1_000_000_000)
-    _num(cp.minSecondsToEndDate, "copy.minSecondsToEndDate", 0, 1e9)
-    _num(cp.maxSecondsToEndDate, "copy.maxSecondsToEndDate", 0, 1e9)
-    _num(c.risk.maxDailySpendUsdc, "risk.maxDailySpendUsdc", 0, 1e12)
+    # validated AND written back as numbers: YAML allows "60" and both implementations must compute with 60
+    cp.orderSizeUsdc = _num(cp.orderSizeUsdc, "copy.orderSizeUsdc", 1, 1_000_000)
+    cp.maxBuysPerOutcome = _int(cp.maxBuysPerOutcome, "copy.maxBuysPerOutcome", 1, 1000)
+    cp.maxOpenPositions = _int(cp.maxOpenPositions, "copy.maxOpenPositions", 1, 100_000)
+    cp.maxOpenPositionsPerTarget = _int(cp.maxOpenPositionsPerTarget, "copy.maxOpenPositionsPerTarget", 1, 100_000)
+    cp.maxFillAgeSec = _num(cp.maxFillAgeSec, "copy.maxFillAgeSec", 1, 86_400)
+    cp.minTargetNotionalUsdc = _num(cp.minTargetNotionalUsdc, "copy.minTargetNotionalUsdc", 0, 1_000_000_000)
+    cp.minPrice = _num(cp.minPrice, "copy.minPrice", 0, 1)
+    cp.maxPrice = _num(cp.maxPrice, "copy.maxPrice", 0, 1)
+    cp.maxSlippage = _num(cp.maxSlippage, "copy.maxSlippage", 0, 1)
+    cp.minBookDepthUsdc = _num(cp.minBookDepthUsdc, "copy.minBookDepthUsdc", 0, 1_000_000_000)
+    cp.minSecondsToEndDate = _num(cp.minSecondsToEndDate, "copy.minSecondsToEndDate", 0, 1e9)
+    cp.maxSecondsToEndDate = _num(cp.maxSecondsToEndDate, "copy.maxSecondsToEndDate", 0, 1e9)
+    c.risk.maxDailySpendUsdc = _num(c.risk.maxDailySpendUsdc, "risk.maxDailySpendUsdc", 0, 1e12)
     if cp.minPrice >= cp.maxPrice:
         raise ValueError(f"copy.minPrice {cp.minPrice} >= copy.maxPrice {cp.maxPrice}: every BUY would be rejected")
     if cp.maxSecondsToEndDate > 0 and cp.maxSecondsToEndDate <= cp.minSecondsToEndDate:
@@ -163,8 +171,7 @@ def build_config(raw: Mapping[str, Any]) -> Config:
         raise ValueError("copy.sellMode must be all or none")
 
     pm = c.polymarket
-    _num(pm.signatureType, "polymarket.signatureType", 0, 2)
-    pm.signatureType = int(pm.signatureType)
+    pm.signatureType = _int(pm.signatureType, "polymarket.signatureType", 0, 2)
     if c.mode == "live":
         if not pm.privateKey or not re.match(r"^(0x)?[0-9a-fA-F]{64}$", str(pm.privateKey)):
             raise ValueError("live mode needs polymarket.privateKey (64 hex characters)")

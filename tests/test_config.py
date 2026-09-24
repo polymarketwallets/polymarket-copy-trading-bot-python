@@ -39,3 +39,29 @@ def test_env():
     assert substitute_env("k: ${A}", {"A": "x"}) == "k: x"
     with pytest.raises(ValueError, match="B"):
         substitute_env("k: ${B}", {})
+
+
+def test_shared_config_contract():
+    """the Node suite checks the same file: every YAML scalar form normalises to the same values"""
+    import json
+    from dataclasses import asdict
+    from pathlib import Path
+
+    from pmwallets_copytrade.config import load_config
+
+    root = Path(__file__).resolve().parents[3] / "testdata"
+    c = load_config(str(root / "config-contract.yaml"), {})
+    expected = json.loads((root / "config-contract.expected.json").read_text())
+
+    def clean(v):
+        if isinstance(v, dict):
+            return {k: clean(x) for k, x in v.items() if x is not None}
+        if isinstance(v, list):
+            return [clean(x) for x in v]
+        return v
+
+    got = clean({"mode": c.mode, "polymarket": asdict(c.polymarket), "targets": [asdict(t) for t in c.targets],
+                 "copy": asdict(c.copy), "risk": asdict(c.risk), "dataDir": c.dataDir})
+    assert got == expected
+    # counts come back as ints, not "2" or 2.0
+    assert type(c.polymarket.signatureType) is int and type(c.targets[1].maxBuysPerOutcome) is int

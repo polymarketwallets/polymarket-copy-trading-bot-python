@@ -9,7 +9,7 @@ from pmwallets import FillMeta
 from pmwallets_copytrade.config import TargetConfig, build_config
 from pmwallets_copytrade.engine import CopyEngine
 from pmwallets_copytrade.polymarket import Book, Level, Market, OrderOutcome, Token, TradeFill
-from pmwallets_copytrade.state import BotState
+from pmwallets_copytrade.state import BotState, InstanceLock
 from pmwallets_copytrade.units import to_micro
 
 NOW = datetime(2026, 9, 24, 12, 0, 0, tzinfo=timezone.utc).timestamp() * 1000
@@ -55,6 +55,8 @@ class FakeExchange:
         self.sell_result = filled("s1")
         self.balance = 10**12
         self.late_fill = TradeFill()
+        self.fills_calls = []
+        self.balance_fails = 0
 
     async def condition_id_for(self, token_id):
         return "CID"
@@ -73,10 +75,14 @@ class FakeExchange:
         self.sells.append((limit, shares))
         return self.sell_result(shares, limit)
 
-    async def fills_of(self, order_id, condition_id, since_ms):
+    async def fills_of(self, order_id, condition_id, since_ms, match=None):
+        self.fills_calls.append(order_id)
         return self.late_fill
 
     async def token_balance(self, token_id):
+        if self.balance_fails > 0:
+            self.balance_fails -= 1
+            raise RuntimeError("timeout")
         return self.balance
 
 
@@ -88,12 +94,25 @@ class H:
         self.dir = str(tmp_path)
         self.cfg = build_config({"pmwallets": {"apiKey": "pmw_a_b"}, "dataDir": self.dir, **(raw or {})})
         self.ex = FakeExchange()
+        self.clock = {"t": NOW}
+        self._targets = targets
         self.state = BotState(self.dir, self.cfg.mode)
-        self.engine = CopyEngine(self.cfg, self.ex, self.state, Silent(), {t: TargetConfig(t) for t in targets} if targets else None,
-                                 now=lambda: NOW, recheck_s=0.005)
+        self.engine = self.make(self.state)
+
+    def make(self, state, exchange=None):
+        return CopyEngine(self.cfg, exchange or self.ex, state, Silent(),
+                          {t: TargetConfig(t) for t in self._targets} if self._targets else None,
+                          now=lambda: self.clock["t"], recheck_ms=1000, exit_retry_ms=1000)
+
+    def restart(self, exchange=None):
+        """a fresh engine on the same data directory — what a restart looks like"""
+        return self.make(BotState(self.dir, self.cfg.mode), exchange)
 
     def decisions(self):
         return [json.loads(l) for l in self.state.decisions_file.read_text().strip().split("\n")]
+
+    def kinds(self):
+        return [d["decision"] for d in self.decisions()]
 
     def last(self):
         return self.decisions()[-1]
@@ -198,26 +217,141 @@ async def test_daily_cap(tmp_path):
     assert [d["decision"] for d in h.decisions()] == ["dry_run_buy", "skipped_daily_spend_cap"]
 
 
-async def test_late_fill_is_booked(tmp_path):
+def killed(order_id="o9", reason="killed"):
+    return lambda s, l: OrderOutcome(order_id, "none", reason=reason, recheck=True)
+
+
+async def test_unconfirmed_buy_blocks_a_second_buy(tmp_path):
     h = H(tmp_path, LIVE)
-    h.ex.buy_result = lambda s, l: OrderOutcome("o9", "none", reason="order couldn't be fully filled", recheck=True)
-    h.ex.late_fill = TradeFill(12_000_000, 6_120_000, 0, 0)
+    h.ex.buy_result = killed()
+    await h.engine.on_fill(fill(), WS)
+    await h.engine.on_fill(fill(), WS)
+    assert h.kinds() == ["buy_submitted", "buy_unconfirmed", "skipped_order_unconfirmed"]
+
+
+async def test_killed_order_that_filled_is_booked_by_tick_even_after_restart(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.ex.buy_result = killed(reason="order couldn't be fully filled")
     await h.engine.on_fill(fill(), WS)
     assert h.state.position(T1, "TOK") is None
-    await asyncio.sleep(0.05)
-    assert h.state.position(T1, "TOK")["shares"] == "12000000"
-    assert h.last()["decision"] == "late_fill" and h.last()["orderId"] == "o9"
-    await h.engine.stop()
+    assert [(p["orderId"], p["side"]) for p in h.state.pending_orders()] == [("o9", "buy")]
+    again = h.restart()  # the process restarts before the re-check is due
+    h.ex.late_fill = TradeFill(12_000_000, 6_120_000, 0, 0, ["o9"])
+    await again.tick()  # not due yet
+    assert h.ex.fills_calls == []
+    h.clock["t"] += 1_000
+    await again.tick()
+    assert h.ex.fills_calls == ["o9"]
+    st = BotState(h.dir, "live")
+    assert st.position(T1, "TOK")["shares"] == "12000000"
+    assert st.pending_orders() == []
+    assert st.is_booked("o9")
+    assert h.last()["decision"] == "late_fill"
+
+
+async def test_order_without_an_answer_is_matched_to_unattributed_trades(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.ex.buy_result = lambda s, l: OrderOutcome("", "unknown", reason="post_error: socket hang up", recheck=True)
+    await h.engine.on_fill(fill(), WS)
+    assert [p["orderId"] for p in h.state.pending_orders()] == [None]
+    h.ex.late_fill = TradeFill(19_000_000, 9_690_000, 0, 0, ["0xabc"])
+    h.clock["t"] += 1_000
+    await h.engine.tick()
+    assert h.ex.fills_calls == [None]
+    assert h.state.position(T1, "TOK")["shares"] == "19000000"
+    assert h.state.is_booked("0xabc")
+
+
+async def test_gives_up_only_after_repeated_empty_lookups_over_5_minutes(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.ex.buy_result = killed()
+    await h.engine.on_fill(fill(), WS)
+    for _ in range(20):
+        if not h.state.pending_orders():
+            break
+        h.clock["t"] += 60_000
+        await h.engine.tick()
+    assert h.state.pending_orders() == []
+    assert h.last()["decision"] == "confirmed_no_fill"
+    assert h.clock["t"] - NOW >= 5 * 60_000
 
 
 async def test_sell_capped_at_balance(tmp_path):
     h = H(tmp_path, LIVE)
     await h.engine.on_fill(fill(), WS)
-    h.ex.balance = 10_000_000
+    h.ex.balance = 10_000_000  # less than the 19 we think we hold
     await h.engine.on_fill(fill(side="SELL"), WS)
     assert h.ex.sells == [(to_micro("0.49"), 10_000_000)]
     assert h.state.position(T1, "TOK")["shares"] == "9000000"
-    assert h.last()["decision"] == "sold"
+    assert h.kinds()[-3:] == ["exit_queued", "sell_submitted", "sold"]
+    assert len(h.state.pending_exits()) == 1  # 9 shares still booked: keep trying
+
+
+async def test_never_sells_shares_booked_to_another_target(tmp_path):
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(entityId=T1), WS)
+    await h.engine.on_fill(fill(entityId=T2), WS)
+    h.ex.balance = 25_000_000  # books say 19 + 19; someone sold 13 by hand
+    await h.engine.on_fill(fill(entityId=T1, side="SELL"), WS)
+    assert h.ex.sells == [(to_micro("0.49"), 6_000_000)]  # 25 − T2's 19
+    assert h.state.position(T2, "TOK")["shares"] == "19000000"
+
+
+async def test_blocks_and_asks_for_reconcile_when_all_left_is_others(tmp_path):
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(entityId=T1), WS)
+    await h.engine.on_fill(fill(entityId=T2), WS)
+    h.ex.balance = 19_000_000
+    await h.engine.on_fill(fill(entityId=T1, side="SELL"), WS)
+    assert h.ex.sells == []
+    assert h.last()["decision"] == "exit_blocked_reconcile"
+
+
+async def test_transient_failure_is_retried_until_the_exit_happens(tmp_path):
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(), WS)
+    h.ex.balance_fails = 2
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    assert h.ex.sells == []
+    assert h.last()["decision"] == "exit_retry_balance_failed"
+    h.clock["t"] += 1_000
+    await h.engine.tick()
+    h.clock["t"] += 2_000
+    await h.engine.tick()
+    assert len(h.ex.sells) == 1
+    assert h.state.positions() == []
+    assert h.state.pending_exits() == []
+    assert h.last()["decision"] == "exit_done"
+
+
+async def test_pending_exit_survives_a_restart(tmp_path):
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(), WS)
+    h.ex.balance_fails = 1
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    again = h.restart()
+    h.clock["t"] += 1_000
+    await again.tick()
+    assert len(h.ex.sells) == 1
+
+
+async def test_old_sell_still_exits(tmp_path):
+    h = H(tmp_path)
+    await h.engine.on_fill(fill(), WS)
+    await h.engine.on_fill(fill(side="SELL", ts="2026-09-24 09:00:00"), REPLAY)
+    assert h.state.positions() == []
+
+
+async def test_unconfirmed_exit_order_is_waited_for_not_doubled(tmp_path):
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(), WS)
+    h.ex.sell_result = killed("s9", "no orders found")
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    h.clock["t"] += 1_000
+    h.ex.late_fill = TradeFill(19_000_000, 9_310_000, 0, 0, ["s9"])
+    await h.engine.tick()  # books the late sell first, then the exit finds nothing left
+    assert len(h.ex.sells) == 1
+    assert h.state.positions() == []
 
 
 async def test_never_sells_another_targets_position(tmp_path):
@@ -251,3 +385,23 @@ async def test_settlement_sweep(tmp_path):
     assert h.state.positions() == []
     last = h.last()
     assert (last["decision"], last["won"], last["payout"]) == ("settled", True, "$19.00")
+
+
+def test_instance_lock(tmp_path):
+    import socket
+    a = InstanceLock(str(tmp_path), "live")
+    a.acquire()
+    with pytest.raises(RuntimeError, match="another pmwallets-copytrade"):
+        InstanceLock(str(tmp_path), "live").acquire()
+    InstanceLock(str(tmp_path), "dry-run").acquire()
+    a.release()
+    (tmp_path / "lock.live").write_text(json.dumps({"pid": 2**22 + 12345, "host": socket.gethostname()}))
+    InstanceLock(str(tmp_path), "live").acquire()
+
+
+def test_instance_lock_reads_a_node_lock_held_by_a_live_process(tmp_path):
+    import os
+    import socket
+    (tmp_path / "lock.live").write_text(json.dumps({"pid": os.getpid(), "host": socket.gethostname(), "startedAt": "2026-09-24T12:00:00.000Z"}))
+    with pytest.raises(RuntimeError, match="another pmwallets-copytrade"):
+        InstanceLock(str(tmp_path), "live").acquire()

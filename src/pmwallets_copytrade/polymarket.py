@@ -11,7 +11,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 import httpx
@@ -58,7 +58,11 @@ class Market:
 @dataclass
 class OrderOutcome:
     orderId: str
-    status: str  # filled = got shares (possibly fewer than asked for a FAK); none = nothing matched; failed = rejected
+    # filled  = got shares (possibly fewer than asked for a FAK)
+    # none    = the exchange took the order and matched nothing
+    # failed  = nothing was sent, or the exchange rejected it outright: no fill is possible
+    # unknown = sent, but no usable answer came back (timeout, dropped connection): it may have filled
+    status: str
     shares: int = 0
     usdc: int = 0  # paid (BUY) or received (SELL), fees not deducted
     feeUsdc: int = 0
@@ -73,6 +77,34 @@ class TradeFill:
     usdc: int = 0
     feeUsdc: int = 0
     feeShares: int = 0
+    orderIds: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FillMatch:
+    """How to recognise our fills when the order id never came back."""
+
+    tokenId: str
+    side: str  # "buy" | "sell"
+    is_booked: Callable[[str], bool]
+
+
+def trade_time_ms(v: Any) -> float:
+    """match_time comes as unix seconds (string or number) or an ISO string."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return v * 1000 if v < 1e12 else v
+    s = str(v if v is not None else "")
+    if re.fullmatch(r"\d+(\.\d+)?", s):
+        n = float(s)
+        return n * 1000 if n < 1e12 else n
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp() * 1000
+    except ValueError:
+        return 0
 
 
 _ZERO_FILL = re.compile(r"no orders found|couldn't be fully filled|fully filled or killed", re.I)
@@ -228,17 +260,11 @@ class PolymarketGateway:
         since = time.time() * 1000 - 30_000
         from py_clob_client_v2 import OrderArgs, OrderType
 
-        def send() -> Any:
-            signed = clob.create_order(OrderArgs(token_id=token_id, price=from_micro(price), size=from_micro(size), side="BUY"))
-            return clob.post_order(signed, OrderType.FOK)
-
         try:
-            resp = await asyncio.to_thread(send)
+            signed = await asyncio.to_thread(clob.create_order, OrderArgs(token_id=token_id, price=from_micro(price), size=from_micro(size), side="BUY"))
         except Exception as e:
-            resp = self._error_body(e)
-            if resp is None:
-                return self._failed(f"sdk_error: {e}"[:300])
-        return await self._settle(resp, "buy", condition_id, since, size, price)
+            return self._failed(f"sign_error: {e}"[:300])  # nothing left this machine
+        return await self._post(clob, signed, OrderType.FOK, "buy", condition_id, since, size, price)
 
     async def sell_fak(self, token_id: str, condition_id: str, limit: int, shares: int) -> OrderOutcome:
         """SELL up to `shares`, taking whatever crosses at `limit` or better, cancelling the rest (FAK)."""
@@ -250,17 +276,28 @@ class PolymarketGateway:
         since = time.time() * 1000 - 30_000
         from py_clob_client_v2 import MarketOrderArgs, OrderType
 
-        def send() -> Any:
-            args = MarketOrderArgs(token_id=token_id, amount=from_micro(size), side="SELL", price=from_micro(price), order_type=OrderType.FAK)
-            return clob.create_and_post_market_order(args, None, OrderType.FAK)
-
         try:
-            resp = await asyncio.to_thread(send)
+            args = MarketOrderArgs(token_id=token_id, amount=from_micro(size), side="SELL", price=from_micro(price), order_type=OrderType.FAK)
+            signed = await asyncio.to_thread(clob.create_market_order, args, None)
         except Exception as e:
-            resp = self._error_body(e)
-            if resp is None:
-                return self._failed(f"sdk_error: {e}"[:300])
-        return await self._settle(resp, "sell", condition_id, since, size, price)
+            return self._failed(f"sign_error: {e}"[:300])
+        return await self._post(clob, signed, OrderType.FAK, "sell", condition_id, since, size, price)
+
+    async def _post(self, clob: Any, signed: Any, order_type: Any, side: str, condition_id: str, since: float, size: int, price: int) -> OrderOutcome:
+        """Once an order has left, only a definitive answer settles it. py-clob-client-v2 raises on any non-200:
+        an exception WITH a response (status code) is still the exchange's answer — its body is processed like the
+        TS client's returned body (the FOK/FAK zero-fill reply is a 400 carrying the orderID; a plain rejection is
+        'failed'). Only a transport error (no response at all) leaves it 'unknown': it may have filled."""
+        try:
+            resp = await asyncio.to_thread(clob.post_order, signed, order_type)
+        except Exception as e:
+            if getattr(e, "status_code", None) is None:
+                return OrderOutcome(orderId="", status="unknown", reason=f"post_error: {e}"[:300], recheck=True)
+            body = self._error_body(e)
+            if body is None:
+                return self._failed(f"rejected: HTTP {getattr(e, 'status_code', '?')}: {getattr(e, 'error_msg', e)}"[:300])
+            resp = body
+        return await self._settle(resp, side, condition_id, since, size, price)
 
     async def _settle(self, resp: Any, side: str, condition_id: str, since: float, asked_shares: int, asked_price: int) -> OrderOutcome:
         """Turn the post-order response into what we actually got (see the Node gateway for the full story)."""
@@ -288,26 +325,39 @@ class PolymarketGateway:
             except (TypeError, ValueError):
                 making = taking = 0.0
             if making > 0 and taking > 0:
-                fill = TradeFill(shares=to_micro(taking if side == "buy" else making), usdc=to_micro(making if side == "buy" else taking))
+                fill = TradeFill(shares=to_micro(taking if side == "buy" else making), usdc=to_micro(making if side == "buy" else taking), orderIds=[order_id])
             elif str(resp.get("status") or "").lower() == "matched":
-                fill = TradeFill(shares=asked_shares, usdc=asked_shares * asked_price // UNIT)
+                fill = TradeFill(shares=asked_shares, usdc=asked_shares * asked_price // UNIT, orderIds=[order_id])
         if fill is None or fill.shares == 0:
             return OrderOutcome(orderId=order_id, status="none", reason="no_fill_found", recheck=True)
         net = fill.shares - fill.feeShares if side == "buy" else fill.shares
         return OrderOutcome(orderId=order_id, status="filled", shares=fill.shares, usdc=fill.usdc, feeUsdc=fill.feeUsdc, netShares=net)
 
-    async def fills_of(self, order_id: str, condition_id: str, since_ms: float) -> TradeFill:
-        """Our fills for one order: the CLOB cannot filter by order id, so scope by market + time and match
-        taker_order_id here, all pages. BUY taker fees are charged in shares: size × fee_rate_bps / 10000."""
+    async def fills_of(self, order_id: Optional[str], condition_id: str, since_ms: float, match: Optional[FillMatch] = None) -> TradeFill:
+        """Our taker fills for one order — or, when the order id never came back (`order_id` None), the taker fills in
+        this token and side since `since_ms` not attributed to any order already booked. The CLOB cannot filter
+        trades by order id, so scope by market + time and match here, all pages. BUY taker fees are charged in
+        shares: size × fee_rate_bps / 10000, converted at the fill price."""
         clob = self._require_clob()
         from py_clob_client_v2 import TradeParams
 
         trades = await asyncio.to_thread(clob.get_trades, TradeParams(market=condition_id, after=int(since_ms // 1000)), False)
         out = TradeFill()
-        oid = order_id.lower()
+        oid = order_id.lower() if order_id else None
         for t in trades if isinstance(trades, list) else []:
-            if str(t.get("taker_order_id") or "").lower() != oid:
-                continue
+            taker = str(t.get("taker_order_id") or "").lower()
+            if oid:
+                if taker != oid:
+                    continue
+            else:
+                if match is None or not taker or match.is_booked(taker):
+                    continue
+                if str(t.get("trader_side") or "").upper() != "TAKER":
+                    continue
+                if str(t.get("asset_id")) != match.tokenId or str(t.get("side") or "").lower() != match.side:
+                    continue
+                if trade_time_ms(t.get("match_time")) < since_ms:
+                    continue
             size = to_micro(t["size"])
             price = to_micro(t["price"])
             fee_shares = size * int(t.get("fee_rate_bps") or 0) // 10_000
@@ -315,6 +365,8 @@ class PolymarketGateway:
             out.usdc += size * price // UNIT
             out.feeShares += fee_shares
             out.feeUsdc += fee_shares * price // UNIT
+            if taker not in out.orderIds:
+                out.orderIds.append(taker)
         return out
 
     async def token_balance(self, token_id: str) -> int:
