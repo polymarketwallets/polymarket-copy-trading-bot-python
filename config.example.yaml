@@ -1,0 +1,45 @@
+# pmwallets-copytrade — copy the Polymarket traders you follow on PMWallets.
+#
+# 1. Create an API key on https://pmwallets.com/keys and subscribe to the traders you want to copy.
+# 2. Run in dry-run first (the default): every decision is logged, nothing is traded.
+# 3. When the log looks right, set `mode: live` and fill in the polymarket section.
+#
+# ${NAME} is read from the environment — keep secrets out of this file.
+
+mode: dry-run            # dry-run | live
+
+pmwallets:
+  apiKey: ${PMW_API_KEY}
+
+polymarket:
+  # only needed for live mode
+  # privateKey: ${POLY_PRIVATE_KEY}       # the key that signs your Polymarket orders
+  # signatureType: 2                       # 0 = plain EOA wallet, 1 = email/Magic login, 2 = browser-wallet login
+  # funderAddress: ${POLY_FUNDER_ADDRESS}  # your Polymarket profile address (holds the USDC)
+
+# Leave empty to copy every entity your PMWallets account subscribes to.
+targets: []
+#  - entity: "0x9d84ce0306f8551e02efef1680475fc0f1dc1344"
+#    orderSizeUsdc: 20        # override per target
+#  - entity: "7KQ2MF9X4B1C"   # a handle works once you subscribe to it
+
+copy:
+  orderSizeUsdc: 10          # USDC per mirrored BUY
+  roles: [taker, maker]      # which of the target's fills to act on
+  maxBuysPerOutcome: 3       # follow up to 3 BUYs into one outcome (DCA), then hold
+  maxOpenPositions: 20
+  maxOpenPositionsPerTarget: 5
+  maxFillAgeSec: 60          # older fills (e.g. replayed after downtime) are not copied
+  minTargetNotionalUsdc: 25  # ignore the target's small fills
+  minPrice: 0.05             # only BUY when the best ask is inside this band
+  maxPrice: 0.95
+  maxSlippage: 0.03          # skip if the ask is more than 3 cents above what the target paid
+  minBookDepthUsdc: 50
+  minSecondsToEndDate: 600   # don't enter a market that settles within 10 minutes
+  maxSecondsToEndDate: 0     # 0 = no upper limit
+  sellMode: all              # all = exit when the target sells; none = hold to settlement
+
+risk:
+  maxDailySpendUsdc: 200     # total BUYs per UTC day; 0 = no limit
+
+dataDir: ./pmw-data          # state, stream cursor and decisions.<mode>.jsonl
