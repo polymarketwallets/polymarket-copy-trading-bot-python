@@ -180,6 +180,8 @@ class CopyEngine:
         max_buys = tcfg.maxBuysPerOutcome if tcfg and tcfg.maxBuysPerOutcome is not None else cfg.copy.maxBuysPerOutcome
         if held and held["buyCount"] >= max_buys:
             return self._decide(base, "skipped_max_buys_per_outcome", buyCount=held["buyCount"])
+        if state.has_unknown_reservation():
+            return self._decide(base, "skipped_reconcile_required")
         # an order still being confirmed on this outcome counts as open: buying again could double up
         if any(p["target"] == target and p["tokenId"] == fill["tokenId"] and p["side"] == "buy" for p in state.pending_orders()):
             return self._decide(base, "skipped_order_unconfirmed")
@@ -261,6 +263,28 @@ class CopyEngine:
         state.update_pending_order(key, orderId=r.orderId or None)
         self._record({**base, "decision": "buy_unconfirmed" if p["side"] == "buy" else "sell_unconfirmed", "orderId": r.orderId or None, "reason": r.reason},
                      "warn" if r.status == "unknown" else "info")
+
+    def _needs_reconcile(self, p: dict[str, Any], reason: str) -> None:
+        """Hand an order to a human. It stays pending — reservation and all — until reconcile()."""
+        self.state.update_pending_order(p["key"], needsReconcile=reason)
+        self._record({"eventId": f"recheck:{p['key']}", "target": p["target"], "decision": "order_needs_reconcile", "side": p["side"],
+                      "orderId": p["orderId"], "tokenId": p["tokenId"], "key": p["key"], "reason": reason}, "error")
+
+    async def reconcile(self, key: str, result: Optional[tuple[int, int]]) -> None:
+        """The operator's verdict on an order the bot could not settle: None = it did not fill; otherwise (shares, usdc)
+        it filled for (read them off polymarket.com). Releases the reservation."""
+
+        async def run() -> None:
+            p = next((x for x in self.state.pending_orders() if x["key"] == key), None)
+            if p is None:
+                raise KeyError(f"no pending order {key}")
+            self.state.remove_pending_order(key)
+            if result and result[0] > 0:
+                self._book(p, TradeFill(shares=result[0], usdc=result[1], orderIds=[p["orderId"]] if p.get("orderId") else []))
+            self._record({"eventId": f"reconcile:{key}", "target": p["target"], "decision": "reconciled", "side": p["side"], "tokenId": p["tokenId"],
+                          "filled": from_micro(result[0]) if result else 0, "usdc": fmt_usd(result[1]) if result else "$0.00"})
+
+        await self._serial(run)
 
     def _book(self, p: dict[str, Any], f: TradeFill) -> None:
         """Apply a fill to the books. BUY fees are taken in shares, so the position is what actually landed."""
@@ -362,7 +386,7 @@ class CopyEngine:
             state, ex = self.state, self.exchange
             now = self.now()
             for p in list(state.pending_orders()):
-                if p["nextAt"] > now:
+                if p.get("needsReconcile") or p["nextAt"] > now:
                     continue
                 try:
                     since = p["sentAt"] - 30_000 if p["orderId"] else p["sentAt"] - 5_000
@@ -370,9 +394,7 @@ class CopyEngine:
                                           OrderMatch(p["tokenId"], p["side"], int(p.get("shares") or 0), int(p.get("limit") or 0), state.is_booked))
                 except Exception as e:
                     if now - p["sentAt"] > RECHECK_GIVE_UP_MS:
-                        state.remove_pending_order(p["key"])
-                        self._record({"eventId": f"recheck:{p['key']}", "target": p["target"], "decision": "order_unverified", "side": p["side"],
-                                      "orderId": p["orderId"], "tokenId": p["tokenId"], "reason": str(e)[:200]}, "error")
+                        self._needs_reconcile(p, f"could not look the order up for a day: {str(e)[:160]}")
                     else:
                         state.update_pending_order(p["key"], attempts=p["attempts"] + 1, nextAt=now + self._recheck_delay(p["attempts"] + 1))
                         state.save()
@@ -381,9 +403,7 @@ class CopyEngine:
                     # several orders could be ours: booking any of them could book a manual trade. Keep the reservation
                     # and ask a human once it is clear the ambiguity will not resolve itself.
                     if p["attempts"] + 1 >= RECHECK_ATTEMPTS and now - p["sentAt"] >= RECHECK_MIN_AGE_MS:
-                        state.remove_pending_order(p["key"])
-                        self._record({"eventId": f"recheck:{p['key']}", "target": p["target"], "decision": "order_needs_reconcile", "side": p["side"],
-                                      "tokenId": p["tokenId"], "reason": "more than one unattributed order matches what was sent"}, "error")
+                        self._needs_reconcile(p, "more than one unattributed order matches what was sent")
                     else:
                         state.update_pending_order(p["key"], attempts=p["attempts"] + 1, nextAt=now + self._recheck_delay(p["attempts"] + 1))
                         state.save()

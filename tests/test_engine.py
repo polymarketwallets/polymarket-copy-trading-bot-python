@@ -247,18 +247,51 @@ async def test_unconfirmed_buys_hold_budget_and_position_slot(tmp_path):
     assert g.kinds()[-1] == "skipped_position_cap"
 
 
-async def test_ambiguous_match_is_never_booked(tmp_path):
-    h = H(tmp_path, LIVE)
+def ts_at(ms):
+    """a feed timestamp a few seconds before `ms`"""
+    return datetime.fromtimestamp((ms - 5_000) / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def test_ambiguous_match_waits_for_a_human_holding_its_reservation(tmp_path):
+    h = H(tmp_path, {**LIVE, "risk": {"maxDailySpendUsdc": 15}})
     h.ex.buy_result = unknown_post()
     await h.engine.on_fill(fill(), WS)
     h.ex.late_fill = TradeFill(ambiguous=True)
     for _ in range(20):
-        if not h.state.pending_orders():
-            break
         h.clock["t"] += 60_000
         await h.engine.tick()
     assert h.state.positions() == []
-    assert h.last()["decision"] == "order_needs_reconcile"
+    assert [d["decision"] for d in h.decisions()].count("order_needs_reconcile") == 1
+    [p] = h.state.pending_orders()
+    assert "more than one" in p["needsReconcile"]
+    # the $9.69 it may have spent still counts: another $10 BUY would break the $15 cap
+    h.ex.buy_result = filled("o2")
+    await h.engine.on_fill(fill(tokenId="TOK2", ts=ts_at(h.clock["t"])), WS)
+    assert h.last()["decision"] == "skipped_daily_spend_cap"
+    # the operator checks polymarket.com: it did fill
+    await h.engine.reconcile(p["key"], (19_000_000, 9_690_000))
+    assert h.state.pending_orders() == []
+    assert h.state.position(T1, "TOK")["shares"] == "19000000"
+    assert h.last()["decision"] == "reconciled" and h.last()["filled"] == 19
+
+
+async def test_pending_order_from_an_older_build_fails_closed(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.state.file.write_text(json.dumps({"version": 1, "positions": {}, "processed": [], "handledTx": [], "spend": {"day": "", "usdc": "0"},
+                                         "pendingOrders": [{"key": "buy|old", "side": "buy", "orderId": None, "target": T1, "tokenId": "TOK",
+                                                            "conditionId": "CID", "sentAt": NOW, "attempts": 0, "nextAt": NOW}],
+                                         "pendingExits": [], "bookedOrderIds": []}))
+    again = h.restart()
+    st = BotState(h.dir, "live")
+    assert "older build" in st.pending_orders()[0]["needsReconcile"]
+    await again.on_fill(fill(tokenId="TOK2"), WS)
+    assert h.last()["decision"] == "skipped_reconcile_required"
+    h.clock["t"] += 60 * 60_000
+    await again.tick()
+    assert h.ex.fills_calls == []  # never looked up with a made-up size, never dropped
+    await again.reconcile("buy|old", None)
+    await again.on_fill(fill(ts=ts_at(h.clock["t"])), WS)
+    assert h.last()["decision"] == "bought"
 
 
 async def test_killed_order_that_filled_is_booked_by_tick_even_after_restart(tmp_path):

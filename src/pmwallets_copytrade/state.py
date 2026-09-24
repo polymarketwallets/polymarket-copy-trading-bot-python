@@ -57,6 +57,12 @@ class BotState:
             "pendingExits": raw.get("pendingExits") or [],
             "bookedOrderIds": raw.get("bookedOrderIds") or [],
         }
+        # fail closed on a record that lacks what the reconciliation needs: never read a missing amount as 0
+        self.data["pendingOrders"] = [
+            p if p.get("needsReconcile") or (p.get("shares") and p.get("limit") and p.get("reserveUsdc") is not None)
+            else {**p, "needsReconcile": "written by an older build: the size and limit that were sent are unknown"}
+            for p in self.data["pendingOrders"]
+        ]
         self._processed = set(self.data["processed"])
         self._handled_tx = set(self.data["handledTx"])
         self._booked = set(self.data["bookedOrderIds"])
@@ -140,7 +146,11 @@ class BotState:
 
     def reserved_usdc(self) -> int:
         """USDC reserved by BUYs whose outcome is not known yet (held against the daily cap)"""
-        return sum(int(p.get("reserveUsdc") or "0") for p in self.data["pendingOrders"] if p["side"] == "buy")
+        return sum(int(p["reserveUsdc"]) for p in self.data["pendingOrders"] if p["side"] == "buy" and p.get("reserveUsdc"))
+
+    def has_unknown_reservation(self) -> bool:
+        """a BUY whose reservation is unknown: the caps cannot be computed, so no new BUY may go out"""
+        return any(p["side"] == "buy" and not p.get("reserveUsdc") for p in self.data["pendingOrders"])
 
     def open_outcomes(self) -> list[dict[str, str]]:
         """(target, token) pairs that are open or may be about to be: booked positions plus unconfirmed BUYs"""
