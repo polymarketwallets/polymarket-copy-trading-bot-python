@@ -34,7 +34,7 @@ When the dry-run log looks right, switch to live:
 mode: live
 polymarket:
   privateKey: ${POLY_PRIVATE_KEY}        # signs your orders
-  signatureType: 2                       # 2 browser-wallet sign-up · 1 email/Google sign-up · 0 own wallet — see Configuration
+  signatureType: 3                       # see "Set up a Polymarket account for the bot"
   funderAddress: ${POLY_FUNDER_ADDRESS}  # your Polymarket profile address (holds the USDC)
 ```
 
@@ -90,19 +90,49 @@ wins), so run one bot per account.
 variable `NAME`; a missing variable stops the bot at start-up. Invalid values are rejected at start-up, never
 silently ignored.
 
-### Which Polymarket account you have (`polymarket.signatureType`)
+### Set up a Polymarket account for the bot (recommended)
 
-This decides which private key signs your orders and which address holds your money:
+Give the bot **an account of its own**, holding only what you are willing to let it trade. This is the setup we
+recommend and document; follow it step by step:
 
-| `signatureType` | How the account was created | `privateKey` | `funderAddress` |
+1. **Create a new wallet account** in MetaMask (or Rabby): account menu → *Add account*. Use it for nothing but this.
+2. **Sign up on [polymarket.com](https://polymarket.com)** by connecting that wallet (choose MetaMask in the
+   sign-in dialog). Every account created on polymarket.com since 2026-05-04 gets a **Deposit Wallet** — that is
+   `signatureType: 3`.
+3. **Deposit** a small amount on polymarket.com (*Deposit*). The balance polymarket.com shows is what the bot trades.
+4. **Copy two values:**
+   - `funderAddress` — the account wallet address in the polymarket.com **profile menu** (not the MetaMask address);
+   - `privateKey` — the key of the MetaMask account from step 1 (MetaMask → *Account details* → *Show private key*).
+     Put it in an environment variable, never in `config.yaml`.
+5. **Configure** `signatureType: 3`, `privateKey: ${POLY_PRIVATE_KEY}`, `funderAddress: ${POLY_FUNDER_ADDRESS}` and run
+   **`pmwallets-copytrade check`**. It places no order; it must show your balance and *account may open positions*.
+6. Run in `mode: dry-run` until the decision log looks right, then switch to `mode: live` with a small
+   `copy.orderSizeUsdc`.
+
+Why a separate account: the private key the bot holds can move everything in that account, and copy trading should
+never be able to touch money you did not mean to put at risk. The key never leaves your machine.
+
+### Already have an account? Which type it is (`polymarket.signatureType`)
+
+The type decides which key signs your orders and which address holds the money
+([Polymarket: wallet types](https://docs.polymarket.com/trading/wallets-auth)). It has **no default** — the bot
+refuses to trade until you set it, because signing as the wrong type gets every order rejected.
+
+| `signatureType` | Your account is this if… | `privateKey` | `funderAddress` |
 |---|---|---|---|
-| **2** (default) | Signed up on polymarket.com **by connecting a browser wallet** (MetaMask, Coinbase Wallet, Rabby, WalletConnect…). Polymarket created a Safe wallet owned by it. | the browser wallet's key (MetaMask: *Account details → Show private key*) | your **Polymarket profile address** (the Safe) — *not* your MetaMask address |
-| **1** | Signed up on polymarket.com **with email or Google** (a Magic wallet). Polymarket created a proxy wallet. | the key polymarket.com lets you export (*Settings → Export Private Key*) | your **Polymarket profile address** (the proxy) |
-| **0** | You trade from **a plain wallet you control yourself**, and that address holds the funds. | its key | the same address (may be omitted) |
+| **3** · Deposit Wallet | it was created on polymarket.com **on or after 2026-05-04** (any sign-up method) | the wallet you sign in with | the account wallet in the profile menu |
+| **2** · Safe Wallet | it was created **before 2026-05-04** by connecting MetaMask, Rabby or another browser wallet | that browser wallet's key | the account wallet in the profile menu (not the MetaMask address) |
+| **1** · Proxy Wallet | it was created **before 2026-05-04** with email or Google (Magic) | the Magic key polymarket.com lets you export (look for *Export Private Key* in the settings) | the account wallet in the profile menu |
+| **0** · plain wallet | you trade from your own address, with the funds on that address, not through a polymarket.com account | that address's key | the same address (may be omitted) |
 
-If unsure: `funderAddress` is the address polymarket.com shows on your profile; the key is the wallet you log in
-with. Use an account funded only with what you are willing to let the bot trade, and keep the key in an
-environment variable rather than in `config.yaml`. The key never leaves your machine.
+A plain wallet (type 0) must also approve Polymarket's exchange contracts on-chain before its first trade — the
+bot does not do this for you (see Polymarket's
+[approval example](https://github.com/Polymarket/py-clob-client-v2/blob/main/examples/account/approve_allowances.py)).
+Accounts made on polymarket.com (types 1–3) are set up by Polymarket.
+
+Whatever the type, run `pmwallets-copytrade check` before `mode: live`. A balance of $0 while polymarket.com shows
+money means the type or the address is wrong. Polymarket also restricts trading from some regions; `check` reports
+when the account may only close positions.
 
 ### All options
 
@@ -111,7 +141,7 @@ environment variable rather than in `config.yaml`. The key never leaves your mac
 | `mode` | `dry-run` | `dry-run` logs every decision and simulates fills at the best price on the book; `live` sends real orders. |
 | `pmwallets.apiKey` | — (required) | Your PMWallets API key (`pmw_…`, from [pmwallets.com/keys](https://pmwallets.com/keys)). |
 | `pmwallets.baseUrl` | `https://api.pmwallets.com` | PMWallets API endpoint. |
-| `polymarket.signatureType` | `2` | Account type, see the table above. |
+| `polymarket.signatureType` | — | Account type 0–3, see above. No default: required for `mode: live` and `check`. |
 | `polymarket.privateKey` | — | Key that signs your orders. Required in live mode. |
 | `polymarket.funderAddress` | — | Address that holds your funds. Required in live mode unless `signatureType` is 0. |
 | `polymarket.apiKey` / `apiSecret` / `apiPassphrase` | derived | Polymarket CLOB API credentials; derived from `privateKey` at start-up when absent. |
@@ -141,6 +171,7 @@ environment variable rather than in `config.yaml`. The key never leaves your mac
 |---|---|
 | `pmwallets-copytrade init [file]` | Write the example config. |
 | `pmwallets-copytrade run [--config file] [--json]` | Start the bot (`--json`: one JSON log line per event). |
+| `pmwallets-copytrade check [--config file]` | Verify the trading setup without trading: key, subscriptions, account type, balance, restrictions. |
 | `pmwallets-copytrade status [--config file]` | Open positions, today's spend, orders still being confirmed, exits being retried. |
 | `pmwallets-copytrade reconcile [<key> --none \| <key> --filled <shares> --usdc <usdc>]` | Settle an order the bot could not verify by itself. Run with the bot stopped. |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | Honoured for the PMWallets API, the WebSocket and the Polymarket CLOB. |

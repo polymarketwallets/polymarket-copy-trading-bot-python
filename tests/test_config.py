@@ -11,13 +11,58 @@ def test_defaults():
     assert (c.copy.orderSizeUsdc, c.copy.maxBuysPerOutcome, c.copy.minPrice, c.copy.maxPrice, c.copy.minBookDepthUsdc) == (10, 3, 0.05, 0.95, 50)
 
 
-def test_live_needs_key_and_funder():
+def test_live_needs_key_explicit_account_type_and_funder():
+    pk = "ab" * 32
+    funder = "0x1111111111111111111111111111111111111111"
     with pytest.raises(ValueError, match="privateKey"):
         build_config({**KEY, "mode": "live"})
+    # no default account type: signing as the wrong one gets every order rejected
+    with pytest.raises(ValueError, match="signatureType: 3 for accounts created on polymarket.com since 2026-05-04"):
+        build_config({**KEY, "mode": "live", "polymarket": {"privateKey": pk}})
     with pytest.raises(ValueError, match="funderAddress"):
+        build_config({**KEY, "mode": "live", "polymarket": {"privateKey": pk, "signatureType": 3}})
+    with pytest.raises(ValueError, match=r"signatureType must be a number in \[0, 3\]"):
+        build_config({**KEY, "mode": "live", "polymarket": {"privateKey": pk, "signatureType": 4, "funderAddress": funder}})
+    dw = build_config({**KEY, "mode": "live", "polymarket": {"privateKey": pk, "signatureType": "3", "funderAddress": funder}})
+    assert dw.polymarket.signatureType == 3 and type(dw.polymarket.signatureType) is int
+    eoa = build_config({**KEY, "mode": "live", "polymarket": {"privateKey": pk, "signatureType": 0}})
+    assert eoa.polymarket.privateKey == "0x" + pk
+
+
+def test_missing_account_type_message_lists_every_type():
+    with pytest.raises(ValueError) as e:
         build_config({**KEY, "mode": "live", "polymarket": {"privateKey": "ab" * 32}})
-    c = build_config({**KEY, "mode": "live", "polymarket": {"privateKey": "ab" * 32, "signatureType": 0}})
-    assert c.polymarket.privateKey == "0x" + "ab" * 32
+    assert str(e.value) == ("set polymarket.signatureType: 3 for accounts created on polymarket.com since 2026-05-04 (Deposit Wallet), "
+                            "1 for older email/Google accounts, 2 for older browser-wallet accounts, 0 for a plain wallet — see the README")
+
+
+def test_dry_run_needs_no_polymarket_settings():
+    assert build_config(KEY).polymarket.signatureType is None
+
+
+def test_yaml_scalars_stay_strings_and_empty_values_mean_unset(tmp_path):
+    from pmwallets_copytrade.config import load_config
+
+    pk = "0x" + "0" * 63 + "1"  # the default loader would read this as the integer 1
+    f = tmp_path / "c.yaml"
+    f.write_text(f"""mode: live
+pmwallets:
+  apiKey: pmw_a_b
+polymarket:
+  privateKey: {pk}
+  signatureType: 0
+  funderAddress:
+copy:
+  orderSizeUsdc: 20
+  maxFillAgeSec:
+  roles: [taker]
+dataDir:
+""")
+    c = load_config(str(f), {})
+    assert c.polymarket.privateKey == pk
+    assert c.polymarket.signatureType == 0 and c.polymarket.funderAddress is None
+    assert c.copy.orderSizeUsdc == 20 and c.copy.maxFillAgeSec == 60 and c.copy.roles == ["taker"]
+    assert c.dataDir == "./pmw-data"
 
 
 def test_rejects_settings_that_block_every_trade():

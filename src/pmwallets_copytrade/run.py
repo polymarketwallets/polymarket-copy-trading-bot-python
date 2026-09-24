@@ -102,6 +102,12 @@ async def _run_locked(cfg: Config, log: Logger, client: AsyncClient, exchange: P
         log.info("polymarket balance", {"usdc": fmt_usd(usdc)})
         if usdc < to_micro(cfg.copy.orderSizeUsdc):
             log.warn("balance is below one order: BUYs will be rejected until you deposit")
+        try:
+            closed = await exchange.closed_only()
+        except Exception:
+            closed = False
+        if closed:
+            log.warn("Polymarket lets this account only close positions (region or account restriction): BUYs will be rejected")
 
     engine = CopyEngine(cfg, exchange, state, log, targets)
     exit_code = {"code": 0}

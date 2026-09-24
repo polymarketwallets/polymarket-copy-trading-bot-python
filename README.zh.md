@@ -34,7 +34,7 @@ dry-run 日志确认没问题后再切到实盘：
 mode: live
 polymarket:
   privateKey: ${POLY_PRIVATE_KEY}        # 用来签名订单
-  signatureType: 2                       # 2 浏览器钱包注册 · 1 邮箱/Google 注册 · 0 自己的钱包 —— 详见「配置」一节
+  signatureType: 3                       # 见「为机器人准备一个 Polymarket 账户」
   funderAddress: ${POLY_FUNDER_ADDRESS}  # 你的 Polymarket 主页地址（USDC 在这里）
 ```
 
@@ -84,18 +84,42 @@ polymarket:
 `pmwallets-copytrade init` 会生成带注释的 `config.yaml`。文件里的 `${NAME}` 会被替换成环境变量 `NAME` 的值；
 变量不存在时机器人拒绝启动。非法值在启动时就会报错，不会被悄悄忽略。
 
-### 你是哪种 Polymarket 账户（`polymarket.signatureType`）
+### 为机器人准备一个 Polymarket 账户（推荐做法）
 
-它决定用哪把私钥签名订单、钱放在哪个地址：
+给机器人**单独开一个账户**，里面只放你愿意让它去交易的钱。这是我们推荐并写成文档的做法，照着一步步来：
 
-| `signatureType` | 账户是怎么来的 | `privateKey` 填什么 | `funderAddress` 填什么 |
+1. **新建一个钱包账户**：在 MetaMask（或 Rabby）里点账户菜单 → *添加账户*。这个账户只用来干这一件事。
+2. **在 [polymarket.com](https://polymarket.com) 用这个钱包注册**：在登录弹窗里选择 MetaMask 连接。
+   2026-05-04 之后在 polymarket.com 创建的账户都是 **Deposit Wallet**，也就是 `signatureType: 3`。
+3. **充一小笔钱**：在 polymarket.com 点 *Deposit*。polymarket.com 上显示的余额就是机器人能用的余额。
+4. **记下两个值：**
+   - `funderAddress` —— polymarket.com **个人资料菜单**里显示的账户钱包地址（不是 MetaMask 地址）；
+   - `privateKey` —— 第 1 步那个 MetaMask 账户的私钥（MetaMask → *账户详情* → *显示私钥*）。
+     放在环境变量里，不要写进 `config.yaml`。
+5. **填配置**：`signatureType: 3`、`privateKey: ${POLY_PRIVATE_KEY}`、`funderAddress: ${POLY_FUNDER_ADDRESS}`，然后运行
+   **`pmwallets-copytrade check`**。它不会下单；必须显示出你的余额，并提示 *account may open positions*。
+6. 先用 `mode: dry-run` 跑，决策日志看着没问题了，再改成 `mode: live`，`copy.orderSizeUsdc` 先设小一点。
+
+为什么要单独开账户：机器人拿着的私钥能动这个账户里的所有钱，跟单不应该有机会碰到你没打算拿来冒险的资金。私钥只在你本机。
+
+### 已经有账户？判断它是哪种类型（`polymarket.signatureType`）
+
+类型决定用哪把私钥签名、钱放在哪个地址（[Polymarket 官方说明](https://docs.polymarket.com/trading/wallets-auth)）。
+这一项**没有默认值** —— 不填机器人就拒绝实盘，因为按错误的类型签名，所有订单都会被拒。
+
+| `signatureType` | 你的账户属于这种，如果…… | `privateKey` | `funderAddress` |
 |---|---|---|---|
-| **2**（默认） | 在 polymarket.com **用浏览器钱包连接注册**（MetaMask、Coinbase Wallet、Rabby、WalletConnect 等）。Polymarket 为它创建了一个 Safe 钱包。 | 这个浏览器钱包的私钥（MetaMask：*账户详情 → 显示私钥*） | 你的 **Polymarket 主页地址**（即 Safe）—— *不是* MetaMask 地址 |
-| **1** | 在 polymarket.com **用邮箱或 Google 注册**（Magic 钱包）。Polymarket 为它创建了一个代理钱包。 | polymarket.com 允许你导出的私钥（*Settings → Export Private Key*） | 你的 **Polymarket 主页地址**（即代理钱包） |
-| **0** | 你**直接用自己掌控的普通钱包**交易，资金就在这个地址上。 | 它的私钥 | 同一个地址（可以不填） |
+| **3** · Deposit Wallet | 是 **2026-05-04 当天或之后**在 polymarket.com 创建的（任何注册方式） | 你登录用的那个钱包的私钥 | 个人资料菜单里的账户钱包地址 |
+| **2** · Safe Wallet | 是 **2026-05-04 之前**用 MetaMask、Rabby 等浏览器钱包连接注册的 | 这个浏览器钱包的私钥 | 个人资料菜单里的账户钱包地址（不是 MetaMask 地址） |
+| **1** · Proxy Wallet | 是 **2026-05-04 之前**用邮箱或 Google（Magic）注册的 | polymarket.com 允许你导出的 Magic 私钥（在设置里找 *Export Private Key*） | 个人资料菜单里的账户钱包地址 |
+| **0** · 普通钱包 | 你直接用自己的地址交易，钱就在这个地址上，不经过 polymarket.com 账户 | 这个地址的私钥 | 同一个地址（可不填） |
 
-拿不准时：`funderAddress` 就是 polymarket.com 个人主页上显示的地址；私钥是你登录时用的那个钱包的。建议用一个只放了
-「愿意让机器人去交易的钱」的账户，私钥放在环境变量里而不是 `config.yaml` 中。私钥只在你本机，不会发给任何人。
+普通钱包（类型 0）在第一次交易前，还要自己在链上授权 Polymarket 的交易所合约 —— 机器人不会替你做（参考
+Polymarket 的[授权示例](https://github.com/Polymarket/py-clob-client-v2/blob/main/examples/account/approve_allowances.py)）。
+在 polymarket.com 上创建的账户（类型 1–3）由 Polymarket 设置好。
+
+不管哪种类型，改成 `mode: live` 之前都先运行 `pmwallets-copytrade check`。如果 polymarket.com 上有钱、`check` 却显示余额
+$0，说明类型或地址填错了。Polymarket 还限制部分地区交易；账户只能平仓时，`check` 会提示。
 
 ### 全部配置项
 
@@ -104,7 +128,7 @@ polymarket:
 | `mode` | `dry-run` | `dry-run` 只记录每个决策，按盘口最优价模拟成交；`live` 真实下单。 |
 | `pmwallets.apiKey` | —（必填） | PMWallets API key（`pmw_…`，在 [pmwallets.com/keys](https://pmwallets.com/keys) 创建）。 |
 | `pmwallets.baseUrl` | `https://api.pmwallets.com` | PMWallets API 地址。 |
-| `polymarket.signatureType` | `2` | 账户类型，见上表。 |
+| `polymarket.signatureType` | — | 账户类型 0–3，见上文。没有默认值：`mode: live` 和 `check` 必填。 |
 | `polymarket.privateKey` | — | 签名订单用的私钥。实盘必填。 |
 | `polymarket.funderAddress` | — | 存放资金的地址。实盘必填（`signatureType` 为 0 时可不填）。 |
 | `polymarket.apiKey` / `apiSecret` / `apiPassphrase` | 自动派生 | Polymarket CLOB API 凭据；不填则启动时由 `privateKey` 派生。 |
@@ -134,6 +158,7 @@ polymarket:
 |---|---|
 | `pmwallets-copytrade init [file]` | 生成示例配置。 |
 | `pmwallets-copytrade run [--config file] [--json]` | 启动机器人（`--json`：每个事件一行 JSON 日志）。 |
+| `pmwallets-copytrade check [--config file]` | 不下单地检查实盘准备：key、订阅、账户类型、余额、限制。 |
 | `pmwallets-copytrade status [--config file]` | 持仓、今日花费、待确认订单、正在重试的退出。 |
 | `pmwallets-copytrade reconcile [<key> --none \| <key> --filled <股数> --usdc <金额>]` | 人工确认机器人自己无法核实的订单。需在机器人停止时运行。 |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | PMWallets API、WebSocket 和 Polymarket CLOB 都会走代理。 |

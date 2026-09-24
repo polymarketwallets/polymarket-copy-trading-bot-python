@@ -148,6 +148,7 @@ class PolymarketGateway:
         self.cfg = cfg
         self.log = log
         self.clob: Any = None
+        self._signer: Optional[str] = None
         self._http = http or httpx.AsyncClient(timeout=10.0)  # trust_env: honours HTTPS_PROXY
         self._token_to_condition: dict[str, str] = {}
         self._tick_sizes: dict[str, int] = {}
@@ -156,6 +157,18 @@ class PolymarketGateway:
     @property
     def can_trade(self) -> bool:
         return self.clob is not None
+
+    @property
+    def signer_address(self) -> Optional[str]:
+        """the address that signs (the private key's), after connect()"""
+        return self._signer
+
+    async def closed_only(self) -> bool:
+        """True when Polymarket only lets this account close positions (e.g. a restricted region)."""
+        r = await self._read(self._require_clob().get_closed_only_mode)
+        if isinstance(r, dict) and (r.get("error") or r.get("errorMsg")):
+            raise RuntimeError(str(r.get("errorMsg") or r.get("error")))
+        return isinstance(r, dict) and r.get("closed_only") is True
 
     async def connect(self) -> None:
         """Build the trading client and its L2 credentials. Without a private key the gateway is read-only."""
@@ -186,6 +199,7 @@ class PolymarketGateway:
 
         self.clob = await asyncio.to_thread(build)
         signer = self.clob.get_address()
+        self._signer = signer
         self.log.info("polymarket trading client ready", {"signer": signer, "funder": cfg.funderAddress or signer})
 
     async def _get_json(self, path: str) -> Any:
@@ -365,18 +379,32 @@ class PolymarketGateway:
         trades = await asyncio.to_thread(clob.get_trades, TradeParams(market=condition_id, after=int(since_ms // 1000)), False)
         return attribute_fills(trades if isinstance(trades, list) else [], order_id, since_ms, match)
 
+    @staticmethod
+    async def _read(fn: Any, *args: Any) -> Any:
+        """Call a py-clob-client-v2 read. It raises on an HTTP error where the TS client returns the error body; hand
+        that body back so the caller's error check (and message) is the same as the Node bot's. A transport error
+        (no response at all) propagates."""
+        try:
+            return await asyncio.to_thread(fn, *args)
+        except Exception as e:
+            if getattr(e, "status_code", None) is None:
+                raise
+            body = getattr(e, "error_msg", None)
+            if isinstance(body, dict) and (body.get("error") or body.get("errorMsg")):
+                return body
+            return {"error": body if isinstance(body, str) and body else f"HTTP {e.status_code}"}
+
     async def token_balance(self, token_id: str) -> int:
         from py_clob_client_v2 import AssetType, BalanceAllowanceParams
 
         clob = self._require_clob()
         params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
         # The CLOB caches balances server-side: make it re-read the chain first. If that fails, the reading would be the
-        # same possibly-stale cache — fail the read instead of letting it count as a fresh one. (py-clob-client-v2 raises
-        # on HTTP errors, which propagates; an error body is checked too.)
-        upd = await asyncio.to_thread(clob.update_balance_allowance, params)
+        # same possibly-stale cache — fail the read instead of letting it count as a fresh one.
+        upd = await self._read(clob.update_balance_allowance, params)
         if isinstance(upd, dict) and (upd.get("error") or upd.get("errorMsg")):
             raise RuntimeError(f"balance refresh failed: {str(upd.get('errorMsg') or upd.get('error'))[:200]}")
-        r = await asyncio.to_thread(clob.get_balance_allowance, params)
+        r = await self._read(clob.get_balance_allowance, params)
         if isinstance(r, dict) and (r.get("error") or r.get("errorMsg")):
             raise RuntimeError(str(r.get("errorMsg") or r.get("error")))
         return _to_micro_balance(r["balance"]) if isinstance(r, dict) and r.get("balance") else 0
@@ -384,11 +412,10 @@ class PolymarketGateway:
     async def collateral_balance(self) -> int:
         from py_clob_client_v2 import AssetType, BalanceAllowanceParams
 
-        r = await asyncio.to_thread(self._require_clob().get_balance_allowance, BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+        r = await self._read(self._require_clob().get_balance_allowance, BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
         if isinstance(r, dict) and (r.get("error") or r.get("errorMsg")):
             raise RuntimeError(str(r.get("errorMsg") or r.get("error")))
         return _to_micro_balance(r["balance"]) if isinstance(r, dict) and r.get("balance") else 0
-
 
 def _add(out: TradeFill, t: dict[str, Any]) -> None:
     # BUY taker fees are charged in shares: size × fee_rate_bps / 10000, converted at the fill price

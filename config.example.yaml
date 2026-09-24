@@ -11,18 +11,18 @@ pmwallets:
   apiKey: ${PMW_API_KEY}                 # from https://pmwallets.com/keys
   # baseUrl: https://api.pmwallets.com
 
-polymarket:                              # only read in live mode
-  # Which kind of Polymarket account you have — it decides both keys below:
-  #   2 = you signed up on polymarket.com by connecting a browser wallet (MetaMask, Coinbase Wallet, Rabby,
-  #       WalletConnect…). Polymarket created a Safe wallet owned by it.
-  #       privateKey    = that browser wallet's key (MetaMask: Account details → Show private key)
-  #       funderAddress = your Polymarket profile address (the Safe), NOT your MetaMask address
-  #   1 = you signed up on polymarket.com with email or Google (a Magic wallet). Polymarket created a proxy wallet.
-  #       privateKey    = the key polymarket.com lets you export (Settings → Export Private Key)
-  #       funderAddress = your Polymarket profile address (the proxy)
-  #   0 = you trade from a plain wallet you control yourself, and that address holds the funds (no polymarket.com
-  #       sign-up wallet in between). privateKey = its key; funderAddress = the same address (may be omitted).
-  signatureType: 2
+polymarket:                              # read in live mode and by `pmwallets-copytrade check`
+  # Recommended: a separate account just for the bot — a new MetaMask account, signed up on polymarket.com
+  # by connecting it (see "Set up a Polymarket account for the bot" in the README). That is type 3.
+  #
+  # signatureType has no default; the bot will not trade until it is set:
+  #   3 = Deposit Wallet: any account created on polymarket.com on or after 2026-05-04
+  #   2 = Safe Wallet:   created before 2026-05-04 by connecting MetaMask / Rabby / another browser wallet
+  #   1 = Proxy Wallet:  created before 2026-05-04 with email or Google (Magic)
+  #   0 = plain wallet:  your own address holds the funds (you must approve the exchange contracts yourself)
+  # privateKey:    the wallet you sign in with (type 1: the Magic key exported from polymarket.com)
+  # funderAddress: the account wallet shown in the polymarket.com profile menu (type 0: may be omitted)
+  # signatureType: 3
   # privateKey: ${POLY_PRIVATE_KEY}
   # funderAddress: ${POLY_FUNDER_ADDRESS}
   # Polymarket API credentials — optional: derived from privateKey at start-up when absent.

@@ -122,7 +122,8 @@ class H:
 async def test_dry_run_buy(tmp_path):
     h = H(tmp_path)
     await h.engine.on_fill(fill(), WS)
-    assert h.last()["decision"] == "dry_run_buy" and h.last()["at"] == 0.51
+    assert h.last()["decision"] == "dry_run_buy" and h.last()["fillPrice"] == 0.51
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T", h.last()["at"]), "the decision log line keeps its timestamp"
     p = h.state.position(T1, "TOK")
     assert p["shares"] == "19000000"  # $10 / 0.51 = 19.6, but at 0.51 only whole shares land on the cent grid
     assert p["buyCount"] == 1
@@ -607,7 +608,7 @@ async def test_dry_run_sell(tmp_path):
     h = H(tmp_path)
     await h.engine.on_fill(fill(), WS)
     await h.engine.on_fill(fill(side="SELL"), WS)
-    assert h.last()["decision"] == "dry_run_sell" and h.last()["at"] == 0.49
+    assert h.last()["decision"] == "dry_run_sell" and h.last()["fillPrice"] == 0.49
     assert h.state.positions() == []
 
 

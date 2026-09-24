@@ -44,8 +44,11 @@ class RiskConfig:
 class PolymarketConfig:
     clobUrl: str = "https://clob.polymarket.com"
     privateKey: Optional[str] = None
-    signatureType: int = 2  # 0 = EOA, 1 = POLY_PROXY (email/Magic), 2 = POLY_GNOSIS_SAFE (browser wallet)
-    funderAddress: Optional[str] = None  # your Polymarket profile address (holds the USDC)
+    # Which kind of Polymarket account signs the orders — no default, it must be stated for trading:
+    # 3 = Deposit Wallet (every account created on polymarket.com since 2026-05-04), 1 = Proxy Wallet
+    # (older email / Google sign-up), 2 = Safe Wallet (older browser-wallet sign-up), 0 = plain EOA.
+    signatureType: Optional[int] = None
+    funderAddress: Optional[str] = None  # the Polymarket account wallet that holds the funds (the address in the polymarket.com profile menu)
     apiKey: Optional[str] = None
     apiSecret: Optional[str] = None
     apiPassphrase: Optional[str] = None
@@ -107,17 +110,22 @@ def _int(v: Any, path: str, lo: float, hi: float) -> int:
     return int(n)
 
 
-def _merge(cls: Any, raw: Optional[Mapping[str, Any]], **base: Any) -> Any:
+def _present(v: Any) -> Any:
+    """An empty YAML value (the base loader reads `key:` as '') counts as not set."""
+    return None if v is None or (isinstance(v, str) and v.strip() == "") else v
+
+
+def _merge(cls: Any, raw: Any, **base: Any) -> Any:
     obj = cls(**base)
-    for k, v in (raw or {}).items():
-        if hasattr(obj, k):  # unknown keys are ignored, as in the Node bot
+    for k, v in (raw if isinstance(raw, Mapping) else {}).items():
+        if hasattr(obj, k) and _present(v) is not None:  # unknown keys are ignored, as in the Node bot; empty = default
             setattr(obj, k, v)
     return obj
 
 
 def build_config(raw: Mapping[str, Any]) -> Config:
     """Merge onto the defaults and validate. Fail loud on anything that would make the bot trade wrong."""
-    pmw = raw.get("pmwallets") or {}
+    pmw = raw.get("pmwallets") if isinstance(raw.get("pmwallets"), Mapping) else {}
     targets_raw = raw.get("targets") or []
     targets: list[TargetConfig] = []
     for i, t in enumerate(targets_raw):
@@ -125,7 +133,7 @@ def build_config(raw: Mapping[str, Any]) -> Config:
         if not isinstance(t, Mapping) or not isinstance(t.get("entity"), str) or not (_ADDRESS.match(t["entity"]) or _HANDLE.match(t["entity"])):
             raise ValueError(f"targets[{i}].entity must be a 0x address or a 12-character handle")
         tc = TargetConfig(entity=t["entity"].lower() if _ADDRESS.match(t["entity"]) else t["entity"],
-                          orderSizeUsdc=t.get("orderSizeUsdc"), maxBuysPerOutcome=t.get("maxBuysPerOutcome"))
+                          orderSizeUsdc=_present(t.get("orderSizeUsdc")), maxBuysPerOutcome=_present(t.get("maxBuysPerOutcome")))
         if tc.orderSizeUsdc is not None:
             tc.orderSizeUsdc = _num(tc.orderSizeUsdc, f"targets[{i}].orderSizeUsdc", 1, 1_000_000)
         if tc.maxBuysPerOutcome is not None:
@@ -133,13 +141,13 @@ def build_config(raw: Mapping[str, Any]) -> Config:
         targets.append(tc)
 
     c = Config(
-        mode=raw.get("mode", "dry-run"),
-        pmwallets=PmwConfig(apiKey=pmw.get("apiKey"), baseUrl=pmw.get("baseUrl") or "https://api.pmwallets.com"),
+        mode=_present(raw.get("mode")) or "dry-run",
+        pmwallets=PmwConfig(apiKey=_present(pmw.get("apiKey")), baseUrl=_present(pmw.get("baseUrl")) or "https://api.pmwallets.com"),
         polymarket=_merge(PolymarketConfig, raw.get("polymarket")),
         targets=targets,
         copy=_merge(CopyConfig, raw.get("copy")),
         risk=_merge(RiskConfig, raw.get("risk")),
-        dataDir=raw.get("dataDir") or "./pmw-data",
+        dataDir=_present(raw.get("dataDir")) or "./pmw-data",
     )
     if c.mode not in ("dry-run", "live"):
         raise ValueError(f"mode must be dry-run or live, got {c.mode!r}")
@@ -171,15 +179,29 @@ def build_config(raw: Mapping[str, Any]) -> Config:
         raise ValueError("copy.sellMode must be all or none")
 
     pm = c.polymarket
-    pm.signatureType = _int(pm.signatureType, "polymarket.signatureType", 0, 2)
+    if _present(pm.signatureType) is not None:
+        pm.signatureType = _int(pm.signatureType, "polymarket.signatureType", 0, 3)
+    else:
+        pm.signatureType = None
     if c.mode == "live":
-        if not pm.privateKey or not re.match(r"^(0x)?[0-9a-fA-F]{64}$", str(pm.privateKey)):
-            raise ValueError("live mode needs polymarket.privateKey (64 hex characters)")
-        if not pm.privateKey.startswith("0x"):
-            pm.privateKey = "0x" + pm.privateKey
-        if pm.signatureType != 0 and not (pm.funderAddress and _ADDRESS.match(pm.funderAddress)):
-            raise ValueError("live mode with a proxy/safe signature type needs polymarket.funderAddress (your Polymarket profile address)")
+        check_trading_config(c)
     return c
+
+
+def check_trading_config(c: Config) -> None:
+    """What trading needs, checked for live mode and for `check`. The account type has no default on purpose: signing
+    with the wrong one gets every order rejected, and a default that changed under an existing user (Polymarket moved
+    new accounts to Deposit Wallets in May 2026) would do exactly that."""
+    pm = c.polymarket
+    if not pm.privateKey or not re.match(r"^(0x)?[0-9a-fA-F]{64}$", str(pm.privateKey)):
+        raise ValueError("trading needs polymarket.privateKey (64 hex characters)")
+    if not pm.privateKey.startswith("0x"):
+        pm.privateKey = "0x" + pm.privateKey
+    if pm.signatureType is None:
+        raise ValueError("set polymarket.signatureType: 3 for accounts created on polymarket.com since 2026-05-04 (Deposit Wallet), "
+                         "1 for older email/Google accounts, 2 for older browser-wallet accounts, 0 for a plain wallet — see the README")
+    if pm.signatureType != 0 and not (pm.funderAddress and _ADDRESS.match(pm.funderAddress)):
+        raise ValueError("this signatureType needs polymarket.funderAddress: the account wallet address shown in the polymarket.com profile menu")
 
 
 def load_config(path: str, env: Optional[Mapping[str, str]] = None) -> Config:
@@ -187,4 +209,7 @@ def load_config(path: str, env: Optional[Mapping[str, str]] = None) -> Config:
         text = f.read()
     # substitute only in non-comment content so an unset variable named in a comment is not an error
     without_comments = "\n".join("" if re.match(r"^\s*#", line) else line for line in text.split("\n"))
-    return build_config(yaml.safe_load(substitute_env(without_comments, env)) or {})
+    # base loader: every scalar stays a string. The default loader reads an unquoted 0x… value — a private key or an
+    # address, typically substituted from the environment — as a hex NUMBER, which destroys it. Numbers are converted
+    # by build_config's own validation, which accepts strings.
+    return build_config(yaml.load(substitute_env(without_comments, env), Loader=yaml.BaseLoader) or {})

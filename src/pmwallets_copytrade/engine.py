@@ -255,7 +255,7 @@ class CopyEngine:
             usdc = shares * ask // UNIT
             state.add_buy(pos, shares, usdc)
             state.add_spend(usdc, self._dt())
-            return self._decide(base, "dry_run_buy", shares=from_micro(shares), at=from_micro(ask), cost=fmt_usd(usdc), market=market.question, outcome=outcome.outcome)
+            return self._decide(base, "dry_run_buy", shares=from_micro(shares), fillPrice=from_micro(ask), cost=fmt_usd(usdc), market=market.question, outcome=outcome.outcome)
 
         key = f"buy|{fill['eventId']}"
         now = self.now()
@@ -383,7 +383,7 @@ class CopyEngine:
         if cfg.mode == "dry-run":
             usdc = shares * bid // UNIT
             state.reduce(target, token_id, shares)
-            return done("dry_run_sell", shares=from_micro(shares), at=from_micro(bid), proceeds=fmt_usd(usdc), pnl=fmt_usd(usdc - int(held["costUsdc"])))
+            return done("dry_run_sell", shares=from_micro(shares), fillPrice=from_micro(bid), proceeds=fmt_usd(usdc), pnl=fmt_usd(usdc - int(held["costUsdc"])))
 
         try:
             balance = await ex.token_balance(token_id)

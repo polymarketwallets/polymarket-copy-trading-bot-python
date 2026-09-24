@@ -201,7 +201,9 @@ class BotState:
     def log_decision(self, entry: dict[str, Any]) -> None:
         """Append-only audit trail: one line per decision, including every skip and its reason."""
         with open(self.decisions_file, "a", encoding="utf8") as f:
-            f.write(json.dumps({"at": _iso(), **entry}, default=str) + "\n")
+            # `at` is the log's own timestamp: no field of an entry may overwrite it
+            rest = {k: v for k, v in entry.items() if k != "at"}
+            f.write(json.dumps({"at": _iso(), **rest}, default=str) + "\n")
 
 
 def _alive(pid: int) -> bool:

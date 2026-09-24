@@ -112,8 +112,22 @@ async def test_token_balance_failed_refresh_fails_the_read():
 
     with pytest.raises(RuntimeError, match="refresh failed"):
         await gw({"error": "internal"}).token_balance("T")
-    with pytest.raises(PolyApiException):  # py-clob-client-v2 raises on HTTP errors: it propagates
+    # py-clob-client-v2 raises on HTTP errors: read like the TS client's returned error body, same message
+    with pytest.raises(RuntimeError, match="balance refresh failed: internal"):
         await gw(PolyApiException(httpx.Response(500, content=b'{"error":"internal"}'))).token_balance("T")
     with pytest.raises(httpx.ConnectError, match="ECONNRESET"):
         await gw(httpx.ConnectError("ECONNRESET")).token_balance("T")
     assert await gw("", "19000000").token_balance("T") == 19_000_000
+
+
+
+async def test_balance_http_error_reads_like_the_node_bot():
+    class Clob:
+        def get_balance_allowance(self, params):
+            raise PolyApiException(httpx.Response(404, content=b'{"error":"no deposit wallet found for owner"}'))
+
+    g = PolymarketGateway(PolymarketConfig(clobUrl="http://x", signatureType=3), Silent())
+    g.clob = Clob()
+    with pytest.raises(RuntimeError) as e:
+        await g.collateral_balance()
+    assert str(e.value) == "no deposit wallet found for owner"
