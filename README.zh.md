@@ -1,5 +1,7 @@
 # Polymarket 跟单机器人（Python）
 
+[![PyPI](https://img.shields.io/pypi/v/pmwallets-copytrade.svg)](https://pypi.org/project/pmwallets-copytrade/) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 基于 [PMWallets](https://pmwallets.com/zh/copy-trading) 的**开箱即用 Polymarket 跟单机器人**：跟随你订阅的交易者，
 用你自己的账户在 Polymarket CLOB 上按你设定的限制跟单。
 
@@ -84,6 +86,16 @@ pytest
 ```
 
 `config.yaml`、状态文件和锁文件与 Node.js 版通用。`testdata/` 是两个实现都必须通过的契约用例 —— 两个仓库里保持一致。
+
+## 相关链接
+
+- [Polymarket 聪明钱排行榜](https://pmwallets.com/zh) —— 从 Polygon 链上计算的 Polymarket 盈利交易者，胜率带置信区间
+- [Polymarket 跟单指南](https://pmwallets.com/zh/copy-trading) —— 哪些钱包值得跟，以及怎样及时拿到他们的成交
+- [怎样向 Polymarket 聪明钱学习](https://pmwallets.com/zh/learn) —— 读懂一份战绩：置信区间、挂单与吃单、擅长的市场
+- [PMWallets API 文档](https://pmwallets.com/zh/docs) —— WebSocket 与 Webhook 成交推送、补发接口、交易历史导出
+- [成交推送实测延迟](https://pmwallets.com/zh/latency) —— 出块到推送的 p50 / p95，实时公布
+- [追踪 Polymarket 钱包的几种做法对比](https://pmwallets.com/zh/compare) —— 官方榜单、免费追踪器、SQL 看板
+- [常见问题](https://pmwallets.com/zh/faq) · [English site](https://pmwallets.com)
 
 ## 代理
 

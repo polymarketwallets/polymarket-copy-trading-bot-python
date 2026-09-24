@@ -1,5 +1,7 @@
 # Polymarket copy-trading bot (Python)
 
+[![PyPI](https://img.shields.io/pypi/v/pmwallets-copytrade.svg)](https://pypi.org/project/pmwallets-copytrade/) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 A **ready-to-run Polymarket copy-trading bot** built on [PMWallets](https://pmwallets.com/copy-trading): it follows the
 traders you subscribe to and mirrors their fills on the Polymarket CLOB with your own account, inside the limits you set.
 
@@ -90,6 +92,16 @@ pytest
 
 The same `config.yaml`, state files and lock file work with the Node.js version. `testdata/` holds the
 contract cases both implementations must pass — keep it identical in both repositories.
+
+## Resources
+
+- [Polymarket smart-money leaderboard](https://pmwallets.com) — profitable Polymarket traders scored from the Polygon chain, with win-rate confidence intervals
+- [Polymarket copy trading guide](https://pmwallets.com/copy-trading) — which wallets are worth following and how to get their fills in time
+- [How to learn from Polymarket smart money](https://pmwallets.com/learn) — reading a trader's record: confidence intervals, maker vs taker, market specialism
+- [PMWallets API documentation](https://pmwallets.com/docs) — WebSocket and webhook fill push, fills replay, trade-history exports
+- [Measured fill-push latency](https://pmwallets.com/latency) — block-to-push p50 / p95, published live
+- [Ways to follow Polymarket wallets, compared](https://pmwallets.com/compare) — official leaderboard, free trackers, SQL dashboards
+- [FAQ](https://pmwallets.com/faq) · [中文站](https://pmwallets.com/zh)
 
 ## Proxies
 
