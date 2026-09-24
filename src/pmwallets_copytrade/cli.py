@@ -123,13 +123,17 @@ async def _check(path: str) -> int:
     try:
         usdc, allowances = await gw.collateral()
         zero = [k for k, v in allowances.items() if v == 0]
-        if allowances and len(zero) == len(allowances):
+        if not allowances:
+            # no approval data at all is not "approved": it cannot be confirmed, so it does not pass
+            bad("Polymarket returned no exchange approvals for this account, so they cannot be confirmed")
+            problems += 1
+        elif len(zero) == len(allowances):
             bad("no exchange contract may spend this wallet's USDC yet: approve them before the first trade (see the README)" if sig_type == 0
                 else "no exchange contract may spend this account's USDC: finish setting up trading on polymarket.com (make one trade or deposit there) first")
             problems += 1
         elif zero:
             print(f"  ! no approval yet for {', '.join(zero)} — orders routed through it will fail")
-        elif allowances:
+        else:
             ok("exchange approvals in place")
         if usdc > 0:
             ok(f"balance {fmt_usd(usdc)} available to trade")

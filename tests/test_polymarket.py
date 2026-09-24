@@ -131,3 +131,27 @@ async def test_balance_http_error_reads_like_the_node_bot():
     with pytest.raises(RuntimeError) as e:
         await g.collateral_balance()
     assert str(e.value) == "no deposit wallet found for owner"
+
+
+
+async def test_collateral_approvals():
+    """reads spender → amount, and treats a missing or malformed map as none known"""
+    class Clob:
+        def __init__(self, resp):
+            self.resp = resp
+
+        def update_balance_allowance(self, params):
+            return ""
+
+        def get_balance_allowance(self, params):
+            return self.resp
+
+    def gw(resp):
+        g = PolymarketGateway(PolymarketConfig(clobUrl="http://x", signatureType=0), Silent())
+        g.clob = Clob(resp)
+        return g
+
+    assert await gw({"balance": "5000000", "allowances": {"0xA": "0", "0xB": "1000"}}).collateral() == (5_000_000, {"0xA": 0, "0xB": 1000})
+    assert (await gw({"balance": "5000000"}).collateral())[1] == {}
+    assert (await gw({"balance": "5000000", "allowances": []}).collateral())[1] == {}
+    assert (await gw({"balance": "5000000", "allowances": "x"}).collateral())[1] == {}

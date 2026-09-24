@@ -427,7 +427,9 @@ class PolymarketGateway:
             return to_micro(t) if "." in t else int(t or "0")
 
         r = r if isinstance(r, dict) else {}
-        allowances = {k: amount(v) for k, v in (r.get("allowances") or {}).items()}
+        # anything but a mapping of spender → amount reads as "no approvals known" (check fails on that)
+        raw = r.get("allowances")
+        allowances = {k: amount(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
         return amount(r.get("balance")), allowances
 
     async def collateral_balance(self) -> int:

@@ -141,3 +141,19 @@ def test_empty_targets_and_data_dir_messages():
         build_config({**KEY, "targets": ""})
     with pytest.raises(ValueError, match="^dataDir is empty: remove the line to use ./pmw-data, or give a directory$"):
         build_config({**KEY, "dataDir": ""})
+
+
+
+def test_unknown_keys_and_non_mapping_sections_messages():
+    with pytest.raises(ValueError, match="^unknown setting target — did you mean targets\\?$"):
+        build_config({**KEY, "target": []})
+    with pytest.raises(ValueError, match="^unknown setting risk.maxDailySpendUSDc — did you mean risk.maxDailySpendUsdc\\?$"):
+        build_config({**KEY, "risk": {"maxDailySpendUSDc": "5"}})
+    with pytest.raises(ValueError, match="^unknown setting copy.foo$"):
+        build_config({**KEY, "copy": {"foo": "1"}})
+    with pytest.raises(ValueError, match='^risk must be a group of settings, not "10"$'):
+        build_config({**KEY, "risk": "10"})
+    with pytest.raises(ValueError, match="^the config must be a group of settings$"):
+        build_config(["x"])
+    with pytest.raises(ValueError, match="^unknown setting targets\\[0\\].orderSize — did you mean targets\\[0\\].orderSizeUsdc\\?$"):
+        build_config({**KEY, "targets": [{"entity": "0x" + "1" * 40, "orderSize": "5"}]})

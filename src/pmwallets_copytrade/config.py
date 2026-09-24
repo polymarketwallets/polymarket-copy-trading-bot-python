@@ -1,10 +1,11 @@
 """Configuration: the same YAML keys (camelCase) as the Node bot, so one config.yaml works for both."""
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Mapping, Optional
 
 import yaml
@@ -91,6 +92,18 @@ def substitute_env(text: str, env: Optional[Mapping[str, str]] = None) -> str:
     return _ENV.sub(rep, text)
 
 
+def _js_num(x: float) -> str:
+    """a number as JavaScript prints it (1000000, not 1e+06)"""
+    return str(int(x)) if math.isfinite(x) and x == int(x) else repr(x)
+
+
+def _js_json(v: Any) -> str:
+    """JSON.stringify's output, so messages read the same as the Node bot's"""
+    if isinstance(v, float) and math.isfinite(v):
+        return _js_num(v)
+    return json.dumps(v, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
 def _num(v: Any, path: str, lo: float, hi: float) -> float:
     n = v
     if isinstance(v, str) and v.strip() != "":
@@ -99,14 +112,14 @@ def _num(v: Any, path: str, lo: float, hi: float) -> float:
         except ValueError:
             n = None
     if isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) or n < lo or n > hi:
-        raise ValueError(f"{path} must be a number in [{lo:g}, {hi:g}], got {v!r}")
+        raise ValueError(f"{path} must be a number in [{_js_num(lo)}, {_js_num(hi)}], got {_js_json(v)}")
     return n
 
 
 def _int(v: Any, path: str, lo: float, hi: float) -> int:
     n = _num(v, path, lo, hi)
     if n != int(n):
-        raise ValueError(f"{path} must be a whole number, got {v!r}")
+        raise ValueError(f"{path} must be a whole number, got {_js_json(v)}")
     return int(n)
 
 
@@ -136,13 +149,50 @@ def _list_of(v: Any, path: str) -> list[Any]:
     raise ValueError(f"{path} must be a list — write {path}: [] for none")
 
 
-def build_config(raw: Mapping[str, Any]) -> Config:
+# every key the config may contain — anything else is a typo, and a typo must not silently become a default
+ALLOWED = {
+    "top": ["mode", "pmwallets", "polymarket", "targets", "copy", "risk", "dataDir"],
+    "pmwallets": ["apiKey", "baseUrl"],
+    "polymarket": ["clobUrl", "privateKey", "signatureType", "funderAddress", "apiKey", "apiSecret", "apiPassphrase"],
+    "copy": [f.name for f in fields(CopyConfig)],
+    "risk": [f.name for f in fields(RiskConfig)],
+    "target": ["entity", "orderSizeUsdc", "maxBuysPerOutcome"],
+}
+
+
+def _only_known(obj: Mapping[str, Any], allowed: list[str], path: str) -> None:
+    for k in obj:
+        if k not in allowed:
+            kl = str(k).lower()
+            near = next((a for a in allowed if a.lower() == kl or a.lower().startswith(kl)), None)
+            raise ValueError(f"unknown setting {path}{k}" + (f" — did you mean {path}{near}?" if near else ""))
+
+
+def _section(v: Any, path: str, allowed: list[str]) -> Mapping[str, Any]:
+    """a section: missing or left empty → {}; anything but a mapping (e.g. `risk: 10`) is refused"""
+    if v is None or v == "":
+        return {}
+    if not isinstance(v, Mapping):
+        raise ValueError(f"{path} must be a group of settings, not {_js_json(v)}")
+    _only_known(v, allowed, f"{path}.")
+    return v
+
+
+def build_config(raw: Any) -> Config:
     """Merge onto the defaults and validate. Fail loud on anything that would make the bot trade wrong."""
-    pmw = raw.get("pmwallets") if isinstance(raw.get("pmwallets"), Mapping) else {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("the config must be a group of settings")
+    _only_known(raw, ALLOWED["top"], "")
+    copy_raw = _section(raw.get("copy"), "copy", ALLOWED["copy"])
+    pmw = _section(raw.get("pmwallets"), "pmwallets", ALLOWED["pmwallets"])
+    poly_raw = _section(raw.get("polymarket"), "polymarket", ALLOWED["polymarket"])
+    risk_raw = _section(raw.get("risk"), "risk", ALLOWED["risk"])
     targets_raw = _list_of(raw.get("targets"), "targets")
     targets: list[TargetConfig] = []
     for i, t in enumerate(targets_raw):
         t = {"entity": t} if isinstance(t, str) else t
+        if isinstance(t, Mapping):
+            _only_known(t, ALLOWED["target"], f"targets[{i}].")
         if not isinstance(t, Mapping) or not isinstance(t.get("entity"), str) or not (_ADDRESS.match(t["entity"]) or _HANDLE.match(t["entity"])):
             raise ValueError(f"targets[{i}].entity must be a 0x address or a 12-character handle")
         tc = TargetConfig(entity=t["entity"].lower() if _ADDRESS.match(t["entity"]) else t["entity"],
@@ -156,10 +206,10 @@ def build_config(raw: Mapping[str, Any]) -> Config:
     c = Config(
         mode=raw["mode"] if raw.get("mode") is not None else "dry-run",
         pmwallets=PmwConfig(apiKey=pmw.get("apiKey"), baseUrl=pmw["baseUrl"] if pmw.get("baseUrl") is not None else "https://api.pmwallets.com"),
-        polymarket=_merge(PolymarketConfig, raw.get("polymarket")),
+        polymarket=_merge(PolymarketConfig, poly_raw),
         targets=targets,
-        copy=_merge(CopyConfig, raw.get("copy")),
-        risk=_merge(RiskConfig, raw.get("risk")),
+        copy=_merge(CopyConfig, copy_raw),
+        risk=_merge(RiskConfig, risk_raw),
         dataDir=raw["dataDir"] if raw.get("dataDir") is not None else "./pmw-data",
     )
     if not isinstance(c.dataDir, str) or not c.dataDir.strip():
@@ -227,4 +277,5 @@ def load_config(path: str, env: Optional[Mapping[str, str]] = None) -> Config:
     # base loader: every scalar stays a string. The default loader reads an unquoted 0x… value — a private key or an
     # address, typically substituted from the environment — as a hex NUMBER, which destroys it. Numbers are converted
     # by build_config's own validation, which accepts strings.
-    return build_config(yaml.load(substitute_env(without_comments, env), Loader=yaml.BaseLoader) or {})
+    doc = yaml.load(substitute_env(without_comments, env), Loader=yaml.BaseLoader)
+    return build_config({} if doc is None else doc)

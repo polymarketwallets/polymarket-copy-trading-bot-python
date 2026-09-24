@@ -52,6 +52,42 @@
   {
    "name": "numeric text",
    "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  orderSizeUsdc: ten\n"
+  },
+  {
+   "name": "typo: target instead of targets",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ntarget:\n  - \"0x1111111111111111111111111111111111111111\"\n"
+  },
+  {
+   "name": "typo: risk.maxDailySpendUSDc",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\nrisk:\n  maxDailySpendUSDc: 1\n"
+  },
+  {
+   "name": "typo: copy.orderSizeUSDc",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  orderSizeUSDc: 1\n"
+  },
+  {
+   "name": "typo: copy.sellmode",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  sellmode: none\n"
+  },
+  {
+   "name": "typo: polymarket.funder",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\npolymarket:\n  funder: \"0x1111111111111111111111111111111111111111\"\n"
+  },
+  {
+   "name": "typo: targets[].orderSize",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ntargets:\n  - entity: \"0x1111111111111111111111111111111111111111\"\n    orderSize: 5\n"
+  },
+  {
+   "name": "section given a value: risk: 10",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\nrisk: 10\n"
+  },
+  {
+   "name": "section given a value: copy: foo",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy: foo\n"
+  },
+  {
+   "name": "section given a list: polymarket",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\npolymarket:\n  - a\n"
   }
  ]
 }
