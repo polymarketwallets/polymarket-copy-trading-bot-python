@@ -79,19 +79,13 @@ def test_known_id_every_trade_of_that_order():
     assert f.shares == to_micro(15) and f.orderIds == ["0xa"]
 
 
-def test_unknown_id_single_consistent_candidate():
+def test_unknown_id_nothing_attributed_only_candidates():
     f = attribute_fills([T(), T(taker_order_id="0xz", asset_id="OTHER")], None, SINCE, match())
-    assert f.shares == to_micro(10) and f.orderIds == ["0xa"]
+    assert f.shares == 0
+    assert f.candidates == [{"orderId": "0xa", "shares": to_micro(10), "usdc": to_micro(5)}]
 
 
-def test_not_ours():
-    assert attribute_fills([T(size="11")], None, SINCE, match()).shares == 0
-    assert attribute_fills([T(price="0.52")], None, SINCE, match()).shares == 0
-    assert attribute_fills([T(trader_side="MAKER")], None, SINCE, match()).shares == 0
-    assert attribute_fills([T(match_time="1789999000")], None, SINCE, match()).shares == 0
-    assert attribute_fills([T()], None, SINCE, match(booked=("0xa",))).shares == 0
-
-
-def test_ambiguous():
-    f = attribute_fills([T(), T(taker_order_id="0xb", size="4")], None, SINCE, match())
-    assert f.ambiguous and f.shares == 0
+def test_not_even_a_candidate():
+    for t in (T(size="11"), T(price="0.52"), T(trader_side="MAKER"), T(match_time="1789999000")):
+        assert attribute_fills([t], None, SINCE, match()).candidates == []
+    assert attribute_fills([T()], None, SINCE, match(booked=("0xa",))).candidates == []

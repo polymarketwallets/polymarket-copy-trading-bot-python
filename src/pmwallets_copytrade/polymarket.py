@@ -78,7 +78,10 @@ class TradeFill:
     feeUsdc: int = 0
     feeShares: int = 0
     orderIds: list[str] = field(default_factory=list)
-    ambiguous: bool = False  # unknown-id lookup found more than one order that could be ours: nothing attributed
+    # unknown-id lookup: taker orders in this token and side, sent since then, not attributed to anything we booked,
+    # that are consistent with what we sent — [{"orderId", "shares", "usdc"}]. Never booked automatically: any of them
+    # could be a manual trade or another target's order; they are shown to the operator to reconcile.
+    candidates: Optional[list[dict[str, Any]]] = None
 
 
 @dataclass
@@ -393,11 +396,11 @@ def _add(out: TradeFill, t: dict[str, Any]) -> None:
 def attribute_fills(trades: list[dict[str, Any]], order_id: Optional[str], since_ms: float, match: Optional[OrderMatch] = None) -> TradeFill:
     """Our fills for one order, from our own trade history.
 
-    Known order id: every trade whose taker_order_id is it. Unknown id (the post never answered): the order is
-    recognised only if EXACTLY ONE unattributed taker order in this token and side, since the send time, is
-    consistent with what we sent — no more shares than we asked for, every fill at our limit or better. Zero
-    candidates → nothing; two or more → `ambiguous`, nothing attributed: a manual trade or another pending order
-    must never be booked to this one.
+    Known order id: every trade whose taker_order_id is it. Unknown id (the post never answered): nothing is
+    attributed. The unattributed taker orders in this token and side since the send time that are consistent with
+    what we sent (no more shares than we asked for, every fill at our limit or better) are returned as `candidates`:
+    a similar manual trade, or another target's order in the same token, is indistinguishable from ours by its shape,
+    so only a human can say which one it was.
     """
     if order_id:
         out = TradeFill()
@@ -409,7 +412,7 @@ def attribute_fills(trades: list[dict[str, Any]], order_id: Optional[str], since
             out.orderIds.append(oid)
         return out
     if match is None:
-        return TradeFill()
+        return TradeFill(candidates=[])
     by_order: dict[str, list[dict[str, Any]]] = {}
     for t in trades:
         taker = str(t.get("taker_order_id") or "").lower()
@@ -422,7 +425,7 @@ def attribute_fills(trades: list[dict[str, Any]], order_id: Optional[str], since
         if trade_time_ms(t.get("match_time")) < since_ms:
             continue
         by_order.setdefault(taker, []).append(t)
-    candidates: list[TradeFill] = []
+    candidates: list[dict[str, Any]] = []
     for oid, ts in by_order.items():
         out = TradeFill()
         within = True
@@ -432,8 +435,5 @@ def attribute_fills(trades: list[dict[str, Any]], order_id: Optional[str], since
                 within = False
             _add(out, t)
         if within and out.shares <= match.shares:
-            out.orderIds.append(oid)
-            candidates.append(out)
-    if len(candidates) == 1:
-        return candidates[0]
-    return TradeFill(ambiguous=True) if candidates else TradeFill()
+            candidates.append({"orderId": oid, "shares": out.shares, "usdc": out.usdc})
+    return TradeFill(candidates=candidates)

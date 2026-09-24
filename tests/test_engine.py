@@ -1,4 +1,5 @@
 import asyncio
+import re
 import itertools
 import json
 from datetime import datetime, timezone
@@ -252,18 +253,18 @@ def ts_at(ms):
     return datetime.fromtimestamp((ms - 5_000) / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-async def test_ambiguous_match_waits_for_a_human_holding_its_reservation(tmp_path):
+async def test_order_handed_to_the_operator_keeps_its_reservation(tmp_path):
     h = H(tmp_path, {**LIVE, "risk": {"maxDailySpendUsdc": 15}})
     h.ex.buy_result = unknown_post()
     await h.engine.on_fill(fill(), WS)
-    h.ex.late_fill = TradeFill(ambiguous=True)
+    h.ex.late_fill = TradeFill(candidates=[{"orderId": "0xa", "shares": 19_000_000, "usdc": 9_690_000}, {"orderId": "0xb", "shares": 5_000_000, "usdc": 2_550_000}])
     for _ in range(20):
         h.clock["t"] += 60_000
         await h.engine.tick()
     assert h.state.positions() == []
     assert [d["decision"] for d in h.decisions()].count("order_needs_reconcile") == 1
     [p] = h.state.pending_orders()
-    assert "more than one" in p["needsReconcile"]
+    assert re.search(r"0xa .*0xb", p["needsReconcile"])
     # the $9.69 it may have spent still counts: another $10 BUY would break the $15 cap
     h.ex.buy_result = filled("o2")
     await h.engine.on_fill(fill(tokenId="TOK2", ts=ts_at(h.clock["t"])), WS)
@@ -314,17 +315,36 @@ async def test_killed_order_that_filled_is_booked_by_tick_even_after_restart(tmp
     assert h.last()["decision"] == "late_fill"
 
 
-async def test_order_without_an_answer_is_matched_to_unattributed_trades(tmp_path):
+async def test_order_whose_id_never_came_back_goes_to_the_operator(tmp_path):
     h = H(tmp_path, LIVE)
     h.ex.buy_result = lambda s, l: OrderOutcome("", "unknown", reason="post_error: socket hang up", recheck=True)
     await h.engine.on_fill(fill(), WS)
     assert [p["orderId"] for p in h.state.pending_orders()] == [None]
-    h.ex.late_fill = TradeFill(19_000_000, 9_690_000, 0, 0, ["0xabc"])
+    h.ex.late_fill = TradeFill(candidates=[{"orderId": "0xabc", "shares": 19_000_000, "usdc": 9_690_000}])
     h.clock["t"] += 1_000
     await h.engine.tick()
     assert h.ex.fills_calls == [None]
-    assert h.state.position(T1, "TOK")["shares"] == "19000000"
-    assert h.state.is_booked("0xabc")
+    assert h.state.positions() == []
+    assert re.search(r"0xabc 19 sh", h.state.pending_orders()[0]["needsReconcile"])
+    assert h.state.pending_orders()[0]["needsReconcile"] == "the order id never came back; possible fill(s): 0xabc 19 sh / $9.69"
+
+
+async def test_two_targets_two_unanswered_orders_only_second_filled(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.ex.buy_result = unknown_post()
+    await h.engine.on_fill(fill(entityId=T1), WS)
+    await h.engine.on_fill(fill(entityId=T2), WS)
+    assert len(h.state.pending_orders()) == 2
+    h.ex.late_fill = TradeFill(candidates=[{"orderId": "0xsecond", "shares": 19_000_000, "usdc": 9_690_000}])
+    h.clock["t"] += 1_000
+    await h.engine.tick()
+    assert h.state.positions() == []
+    assert all(p.get("needsReconcile") for p in h.state.pending_orders())
+    second = next(p for p in h.state.pending_orders() if p["target"] == T2)
+    await h.engine.reconcile(second["key"], (19_000_000, 9_690_000))
+    await h.engine.reconcile(h.state.pending_orders()[0]["key"], None)
+    assert h.state.position(T2, "TOK")["shares"] == "19000000"
+    assert h.state.position(T1, "TOK") is None
 
 
 async def test_gives_up_only_after_repeated_empty_lookups_over_5_minutes(tmp_path):

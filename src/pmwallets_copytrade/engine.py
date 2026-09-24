@@ -21,7 +21,7 @@ from .filters import book_gate, market_gate, slippage_gate
 from .log import Logger
 from .polymarket import Book, Market, OrderMatch, OrderOutcome, TradeFill
 from .state import BotState
-from .units import UNIT, clamp_limit, fmt_usd, from_micro, parse_fill_ts, round_buy_shares, to_micro
+from .units import UNIT, clamp_limit, fmt_usd, from_micro, js_num, parse_fill_ts, round_buy_shares, to_micro
 
 T = TypeVar("T")
 
@@ -399,14 +399,12 @@ class CopyEngine:
                         state.update_pending_order(p["key"], attempts=p["attempts"] + 1, nextAt=now + self._recheck_delay(p["attempts"] + 1))
                         state.save()
                     continue
-                if f.ambiguous:
-                    # several orders could be ours: booking any of them could book a manual trade. Keep the reservation
-                    # and ask a human once it is clear the ambiguity will not resolve itself.
-                    if p["attempts"] + 1 >= RECHECK_ATTEMPTS and now - p["sentAt"] >= RECHECK_MIN_AGE_MS:
-                        self._needs_reconcile(p, "more than one unattributed order matches what was sent")
-                    else:
-                        state.update_pending_order(p["key"], attempts=p["attempts"] + 1, nextAt=now + self._recheck_delay(p["attempts"] + 1))
-                        state.save()
+                if f.candidates:
+                    # the answer to our post was lost and something that looks like it filled: it may be ours, a manual
+                    # trade, or another target's order — booking it to this target could sell the wrong position later.
+                    # Keep the reservation and let the operator decide.
+                    listed = "; ".join(f"{c['orderId']} {js_num(from_micro(c['shares']))} sh / {fmt_usd(c['usdc'])}" for c in f.candidates)
+                    self._needs_reconcile(p, f"the order id never came back; possible fill(s): {listed}")
                     continue
                 if f.shares > 0:
                     state.remove_pending_order(p["key"])

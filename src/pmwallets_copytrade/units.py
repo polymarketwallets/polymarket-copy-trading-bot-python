@@ -24,6 +24,11 @@ def from_micro(v: int) -> float:
     return v / 1e6
 
 
+def js_num(x: float) -> str:
+    """A number printed the way JavaScript prints it (19 not 19.0) — messages must read the same as the Node bot's."""
+    return str(int(x)) if math.isfinite(x) and x == int(x) else repr(x)
+
+
 def fmt_usd(v: int) -> str:
     return f"${from_micro(v):.2f}"
 
