@@ -409,6 +409,27 @@ class PolymarketGateway:
             raise RuntimeError(str(r.get("errorMsg") or r.get("error")))
         return _to_micro_balance(r["balance"]) if isinstance(r, dict) and r.get("balance") else 0
 
+    async def collateral(self) -> tuple[int, dict[str, int]]:
+        """USDC balance plus the exchange approvals the CLOB sees for it (spender → allowance, 1e-6)."""
+        from py_clob_client_v2 import AssetType, BalanceAllowanceParams
+
+        clob = self._require_clob()
+        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        upd = await self._read(clob.update_balance_allowance, params)
+        if isinstance(upd, dict) and (upd.get("error") or upd.get("errorMsg")):
+            raise RuntimeError(f"balance refresh failed: {str(upd.get('errorMsg') or upd.get('error'))[:200]}")
+        r = await self._read(clob.get_balance_allowance, params)
+        if isinstance(r, dict) and (r.get("error") or r.get("errorMsg")):
+            raise RuntimeError(str(r.get("errorMsg") or r.get("error")))
+
+        def amount(v: Any) -> int:
+            t = str(v if v is not None else "0")
+            return to_micro(t) if "." in t else int(t or "0")
+
+        r = r if isinstance(r, dict) else {}
+        allowances = {k: amount(v) for k, v in (r.get("allowances") or {}).items()}
+        return amount(r.get("balance")), allowances
+
     async def collateral_balance(self) -> int:
         from py_clob_client_v2 import AssetType, BalanceAllowanceParams
 

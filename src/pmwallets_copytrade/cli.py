@@ -70,7 +70,8 @@ async def _check(path: str) -> int:
     from pmwallets import Client
 
     from .polymarket import PolymarketGateway
-    from .run import _proxy_from_env
+    from .run import _proxy_from_env, funder_mismatch
+    from .wallets import check_funder
 
     def ok(m: str) -> None:
         print(f"  ✓ {m}")
@@ -113,9 +114,23 @@ async def _check(path: str) -> int:
         bad(f"could not derive the trading credentials: {e}")
         return problems + 1
     ok(f"signer {gw.signer_address}")
-    ok(f"funds held by {cfg.polymarket.funderAddress or gw.signer_address}")
+    fc = check_funder(gw.signer_address, cfg.polymarket.funderAddress, sig_type)
+    if fc["ok"]:
+        ok(f"funds held by {cfg.polymarket.funderAddress if cfg.polymarket.funderAddress is not None else gw.signer_address} — this key's {ACCOUNT_TYPES[sig_type].split(' (')[0]}")
+    else:
+        bad(funder_mismatch(cfg.polymarket.funderAddress, sig_type, fc))
+        problems += 1
     try:
-        usdc = await gw.collateral_balance()
+        usdc, allowances = await gw.collateral()
+        zero = [k for k, v in allowances.items() if v == 0]
+        if allowances and len(zero) == len(allowances):
+            bad("no exchange contract may spend this wallet's USDC yet: approve them before the first trade (see the README)" if sig_type == 0
+                else "no exchange contract may spend this account's USDC: finish setting up trading on polymarket.com (make one trade or deposit there) first")
+            problems += 1
+        elif zero:
+            print(f"  ! no approval yet for {', '.join(zero)} — orders routed through it will fail")
+        elif allowances:
+            ok("exchange approvals in place")
         if usdc > 0:
             ok(f"balance {fmt_usd(usdc)} available to trade")
         else:
@@ -127,7 +142,9 @@ async def _check(path: str) -> int:
     except Exception as e:
         # Polymarket's answer when the funder is not a Deposit Wallet owned by this key
         if re.search(r"no deposit wallet found", str(e), re.I):
-            bad(f"Polymarket finds no account wallet at {cfg.polymarket.funderAddress} owned by this key — funderAddress, privateKey or signatureType is wrong")
+            bad(f"this key's Deposit Wallet {cfg.polymarket.funderAddress} is not deployed yet: sign up on polymarket.com with this wallet and make a deposit first"
+                if fc["ok"] else
+                f"Polymarket finds no account wallet at {cfg.polymarket.funderAddress} owned by this key — funderAddress, privateKey or signatureType is wrong")
         else:
             bad(f"balance lookup failed: {e}")
         problems += 1
@@ -140,8 +157,6 @@ async def _check(path: str) -> int:
     except Exception as e:
         bad(f"restriction lookup failed: {e}")
         problems += 1
-    if sig_type == 0:
-        print("  ! a plain wallet must approve the exchange contracts itself before its first trade (see the README)")
 
     print(f"\n{problems} problem(s): fix them before mode: live" if problems else f"\nready for mode: live (the bot is in {cfg.mode} mode now)")
     return 1 if problems else 0

@@ -16,6 +16,7 @@ from .log import Logger
 from .polymarket import PolymarketGateway
 from .state import BotState, InstanceLock
 from .units import fmt_usd, to_micro
+from .wallets import check_funder
 
 _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
@@ -98,6 +99,11 @@ async def _run_locked(cfg: Config, log: Logger, client: AsyncClient, exchange: P
 
     if cfg.mode == "live":
         await exchange.connect()
+        # the funder must be the account this key controls as this type: otherwise every order is rejected, or —
+        # worse — it trades from an account the user did not mean
+        fc = check_funder(exchange.signer_address, cfg.polymarket.funderAddress, cfg.polymarket.signatureType)
+        if not fc["ok"]:
+            raise RuntimeError(funder_mismatch(cfg.polymarket.funderAddress, cfg.polymarket.signatureType, fc))
         usdc = await exchange.collateral_balance()
         log.info("polymarket balance", {"usdc": fmt_usd(usdc)})
         if usdc < to_micro(cfg.copy.orderSizeUsdc):
@@ -166,3 +172,15 @@ async def _run_locked(cfg: Config, log: Logger, client: AsyncClient, exchange: P
         await stream.stop()
         await client.aclose()
     return exit_code["code"]
+
+
+TYPE_NAMES = ["plain wallet (0)", "Proxy Wallet (1)", "Safe Wallet (2)", "Deposit Wallet (3)"]
+
+
+def funder_mismatch(funder: Optional[str], sig_type: int, fc: dict[str, Any]) -> str:
+    """one explanation of a wrong funder, shared by `run` and `check`"""
+    if fc["actualType"] is not None:
+        return f"funderAddress {funder} is this key's {TYPE_NAMES[fc['actualType']]}, but signatureType is {sig_type}: set signatureType: {fc['actualType']}"
+    return (f"funderAddress {funder if funder is not None else '(none)'} is not an account wallet of this private key. "
+            f"As a {TYPE_NAMES[sig_type]} this key's account is {' or '.join(fc['expected'])}. "
+            "Check that the key is the one you sign in to polymarket.com with (Session Keys are not supported yet).")

@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from pmwallets_copytrade.config import build_config, substitute_env
@@ -40,7 +43,7 @@ def test_dry_run_needs_no_polymarket_settings():
     assert build_config(KEY).polymarket.signatureType is None
 
 
-def test_yaml_scalars_stay_strings_and_empty_values_mean_unset(tmp_path):
+def test_yaml_scalars_stay_strings(tmp_path):
     from pmwallets_copytrade.config import load_config
 
     pk = "0x" + "0" * 63 + "1"  # the default loader would read this as the integer 1
@@ -51,18 +54,24 @@ pmwallets:
 polymarket:
   privateKey: {pk}
   signatureType: 0
-  funderAddress:
 copy:
   orderSizeUsdc: 20
-  maxFillAgeSec:
   roles: [taker]
-dataDir:
 """)
     c = load_config(str(f), {})
     assert c.polymarket.privateKey == pk
     assert c.polymarket.signatureType == 0 and c.polymarket.funderAddress is None
     assert c.copy.orderSizeUsdc == 20 and c.copy.maxFillAgeSec == 60 and c.copy.roles == ["taker"]
     assert c.dataDir == "./pmw-data"
+
+
+def test_empty_sections_are_the_defaults(tmp_path):
+    from pmwallets_copytrade.config import load_config
+
+    f = tmp_path / "c.yaml"
+    f.write_text("pmwallets:\n  apiKey: pmw_a_b\npolymarket:\ncopy:\nrisk:\ntargets: []\n")
+    c = load_config(str(f), {})
+    assert c.copy.orderSizeUsdc == 10 and c.risk.maxDailySpendUsdc == 200 and c.targets == []
 
 
 def test_rejects_settings_that_block_every_trade():
@@ -110,3 +119,25 @@ def test_shared_config_contract():
     assert got == expected
     # counts come back as ints, not "2" or 2.0
     assert type(c.polymarket.signatureType) is int and type(c.targets[1].maxBuysPerOutcome) is int
+
+
+
+INVALID = json.loads((Path(__file__).resolve().parents[1] / "testdata" / "config-invalid.json").read_text())["cases"]
+
+
+@pytest.mark.parametrize("case", INVALID, ids=[c["name"] for c in INVALID])
+def test_configs_both_implementations_refuse(tmp_path, case):
+    """shared testdata/config-invalid.json: a field that is present but empty is refused, never defaulted"""
+    from pmwallets_copytrade.config import load_config
+
+    f = tmp_path / "c.yaml"
+    f.write_text(case["yaml"])
+    with pytest.raises(ValueError):
+        load_config(str(f), {})
+
+
+def test_empty_targets_and_data_dir_messages():
+    with pytest.raises(ValueError, match="^targets must be a list — write targets: \\[\\] for none$"):
+        build_config({**KEY, "targets": ""})
+    with pytest.raises(ValueError, match="^dataDir is empty: remove the line to use ./pmw-data, or give a directory$"):
+        build_config({**KEY, "dataDir": ""})

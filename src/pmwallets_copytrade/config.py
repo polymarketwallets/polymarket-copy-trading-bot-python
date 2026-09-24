@@ -111,29 +111,42 @@ def _int(v: Any, path: str, lo: float, hi: float) -> int:
 
 
 def _present(v: Any) -> Any:
-    """An empty YAML value (the base loader reads `key:` as '') counts as not set."""
+    """An empty YAML value (the base loader reads `key:` as '') — used only where an empty value means "not set"
+    (signatureType); everywhere else a present-but-empty field is refused, never replaced by its default."""
     return None if v is None or (isinstance(v, str) and v.strip() == "") else v
 
 
 def _merge(cls: Any, raw: Any, **base: Any) -> Any:
+    """Defaults, overlaid with every key the section sets. A section with nothing under it (`copy:`) is the defaults;
+    a key that is present keeps its value even when empty, so validation refuses it instead of defaulting it."""
     obj = cls(**base)
     for k, v in (raw if isinstance(raw, Mapping) else {}).items():
-        if hasattr(obj, k) and _present(v) is not None:  # unknown keys are ignored, as in the Node bot; empty = default
+        if hasattr(obj, k) and v is not None:  # unknown keys are ignored, as in the Node bot
             setattr(obj, k, v)
     return obj
+
+
+def _list_of(v: Any, path: str) -> list[Any]:
+    """A list option. Missing → empty list. Present but empty (`targets:` with nothing under it) is refused: an empty
+    `targets` means "copy every subscription", which is not something to arrive at by accident."""
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return v
+    raise ValueError(f"{path} must be a list — write {path}: [] for none")
 
 
 def build_config(raw: Mapping[str, Any]) -> Config:
     """Merge onto the defaults and validate. Fail loud on anything that would make the bot trade wrong."""
     pmw = raw.get("pmwallets") if isinstance(raw.get("pmwallets"), Mapping) else {}
-    targets_raw = raw.get("targets") or []
+    targets_raw = _list_of(raw.get("targets"), "targets")
     targets: list[TargetConfig] = []
     for i, t in enumerate(targets_raw):
         t = {"entity": t} if isinstance(t, str) else t
         if not isinstance(t, Mapping) or not isinstance(t.get("entity"), str) or not (_ADDRESS.match(t["entity"]) or _HANDLE.match(t["entity"])):
             raise ValueError(f"targets[{i}].entity must be a 0x address or a 12-character handle")
         tc = TargetConfig(entity=t["entity"].lower() if _ADDRESS.match(t["entity"]) else t["entity"],
-                          orderSizeUsdc=_present(t.get("orderSizeUsdc")), maxBuysPerOutcome=_present(t.get("maxBuysPerOutcome")))
+                          orderSizeUsdc=t.get("orderSizeUsdc"), maxBuysPerOutcome=t.get("maxBuysPerOutcome"))
         if tc.orderSizeUsdc is not None:
             tc.orderSizeUsdc = _num(tc.orderSizeUsdc, f"targets[{i}].orderSizeUsdc", 1, 1_000_000)
         if tc.maxBuysPerOutcome is not None:
@@ -141,14 +154,16 @@ def build_config(raw: Mapping[str, Any]) -> Config:
         targets.append(tc)
 
     c = Config(
-        mode=_present(raw.get("mode")) or "dry-run",
-        pmwallets=PmwConfig(apiKey=_present(pmw.get("apiKey")), baseUrl=_present(pmw.get("baseUrl")) or "https://api.pmwallets.com"),
+        mode=raw["mode"] if raw.get("mode") is not None else "dry-run",
+        pmwallets=PmwConfig(apiKey=pmw.get("apiKey"), baseUrl=pmw["baseUrl"] if pmw.get("baseUrl") is not None else "https://api.pmwallets.com"),
         polymarket=_merge(PolymarketConfig, raw.get("polymarket")),
         targets=targets,
         copy=_merge(CopyConfig, raw.get("copy")),
         risk=_merge(RiskConfig, raw.get("risk")),
-        dataDir=_present(raw.get("dataDir")) or "./pmw-data",
+        dataDir=raw["dataDir"] if raw.get("dataDir") is not None else "./pmw-data",
     )
+    if not isinstance(c.dataDir, str) or not c.dataDir.strip():
+        raise ValueError("dataDir is empty: remove the line to use ./pmw-data, or give a directory")
     if c.mode not in ("dry-run", "live"):
         raise ValueError(f"mode must be dry-run or live, got {c.mode!r}")
     if not isinstance(c.pmwallets.apiKey, str) or not c.pmwallets.apiKey.startswith("pmw_"):

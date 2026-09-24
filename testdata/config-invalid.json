@@ -1,0 +1,57 @@
+{
+ "_doc": "Configs both implementations must REFUSE at start-up. A field that is present but empty is never replaced by its default: that would trade with amounts or limits nobody confirmed.",
+ "cases": [
+  {
+   "name": "empty copy.orderSizeUsdc",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  orderSizeUsdc:\n"
+  },
+  {
+   "name": "empty risk.maxDailySpendUsdc",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\nrisk:\n  maxDailySpendUsdc:\n"
+  },
+  {
+   "name": "empty copy.sellMode",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  sellMode:\n"
+  },
+  {
+   "name": "empty copy.minPrice",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  minPrice:\n"
+  },
+  {
+   "name": "empty copy.maxFillAgeSec",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  maxFillAgeSec:\n"
+  },
+  {
+   "name": "empty copy.roles",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  roles:\n"
+  },
+  {
+   "name": "empty mode",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\nmode:\n"
+  },
+  {
+   "name": "empty targets",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ntargets:\n"
+  },
+  {
+   "name": "empty target orderSizeUsdc",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ntargets:\n  - entity: \"0x1111111111111111111111111111111111111111\"\n    orderSizeUsdc:\n"
+  },
+  {
+   "name": "empty dataDir",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ndataDir:\n"
+  },
+  {
+   "name": "empty pmwallets.apiKey",
+   "yaml": "pmwallets:\n  apiKey:\n"
+  },
+  {
+   "name": "live with empty signatureType",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\nmode: live\npolymarket:\n  privateKey: 0xabababababababababababababababababababababababababababababababab\n  signatureType:\n  funderAddress: 0x1111111111111111111111111111111111111111\n"
+  },
+  {
+   "name": "numeric text",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  orderSizeUsdc: ten\n"
+  }
+ ]
+}

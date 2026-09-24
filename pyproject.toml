@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 keywords = ["polymarket", "copy-trading", "copytrade", "trading-bot", "prediction-markets", "pmwallets"]
-dependencies = ["pmwallets>=0.1.0", "py-clob-client-v2>=1.1.0", "pyyaml>=6", "httpx>=0.27"]
+dependencies = ["pmwallets>=0.1.0", "py-clob-client-v2>=1.1.0", "pyyaml>=6", "httpx>=0.27", "eth-utils>=4", "eth-abi>=5"]
 
 [project.scripts]
 pmwallets-copytrade = "pmwallets_copytrade.cli:main"
