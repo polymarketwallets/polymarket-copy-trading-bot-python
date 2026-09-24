@@ -432,6 +432,38 @@ async def test_zero_balance_for_10_minutes_finally_closes_the_books(tmp_path):
     assert h.last()["decision"] == "exit_no_balance"
 
 
+async def test_other_retries_do_not_count_as_low_balance_readings(tmp_path):
+    from dataclasses import replace
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(), WS)
+    h.ex.market_ = replace(h.ex.market_, acceptingOrders=False)
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    for _ in range(6):  # 30 min, 7 retries
+        h.clock["t"] += 5 * 60_000
+        await h.engine.tick()
+    h.ex.market_ = replace(h.ex.market_, acceptingOrders=True)
+    h.ex.balance = 0  # a single stale 0
+    h.clock["t"] += 5 * 60_000
+    await h.engine.tick()
+    assert len(h.state.positions()) == 1
+    assert h.last()["decision"] == "exit_retry_zero_balance" and h.last()["lowReads"] == 1
+
+
+async def test_low_readings_while_a_buy_is_pending_never_accumulate(tmp_path):
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(), WS)  # 19 booked
+    h.ex.buy_result = killed("o2")
+    await h.engine.on_fill(fill(), WS)  # DCA add pending
+    h.ex.balance = 0
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    for _ in range(6):
+        h.clock["t"] += 5 * 60_000
+        await h.engine.tick()
+    # the add resolved as "no fill" somewhere in there; the run of low readings only started afterwards
+    assert len(h.state.positions()) == 1
+    assert "exit_retry_balance_short_buy_pending" in h.kinds()
+
+
 async def test_transient_failure_is_retried_until_the_exit_happens(tmp_path):
     h = H(tmp_path, LIVE)
     await h.engine.on_fill(fill(), WS)
@@ -563,6 +595,25 @@ async def test_sell_mode_none(tmp_path):
     await h.engine.on_fill(fill(), WS)
     await h.engine.on_fill(fill(side="SELL"), WS)
     assert h.last()["decision"] == "skipped_sell_mode_none"
+
+
+async def test_reconcile_refuses_amounts_the_order_could_not_have_produced(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.ex.buy_result = unknown_post()
+    await h.engine.on_fill(fill(), WS)  # 19 shares at limit 0.51 → at most $9.69
+    key = h.state.pending_orders()[0]["key"]
+    with pytest.raises(ValueError, match="negative"):
+        await h.engine.reconcile(key, (19_000_000, -100_000_000))
+    with pytest.raises(ValueError, match="was for 19 shares; 20 cannot"):
+        await h.engine.reconcile(key, (20_000_000, 9_000_000))
+    with pytest.raises(ValueError, match=r"\$12\.00 for 19 shares is above the BUY limit \(\$9\.69 max\)"):
+        await h.engine.reconcile(key, (19_000_000, 12_000_000))
+    with pytest.raises(ValueError, match="above 0"):
+        await h.engine.reconcile(key, (0, 0))
+    assert len(h.state.pending_orders()) == 1
+    assert h.state.reserved_usdc() == 9_690_000
+    await h.engine.reconcile(key, (19_000_000, 9_690_000))
+    assert h.state.pending_orders() == []
 
 
 async def test_settlement_sweep(tmp_path):

@@ -49,6 +49,26 @@ class Exchange(Protocol):
     async def token_balance(self, token_id: str) -> int: ...
 
 
+def validate_reconcile(p: dict[str, Any], r: tuple[int, int]) -> None:
+    """What an operator may enter for an order: never more shares than were sent, never a negative amount, and a price
+    the order could actually have filled at (a BUY at its limit or better, a SELL at its limit or better), one cent of
+    rounding either way. A wrong entry must not move the books — or the caps they feed."""
+    shares, usdc = r
+    if shares <= 0:
+        raise ValueError("filled shares must be above 0 (use --none for no fill)")
+    if usdc < 0:
+        raise ValueError("usdc cannot be negative")
+    if p.get("shares") and shares > int(p["shares"]):
+        raise ValueError(f"the order was for {js_num(from_micro(int(p['shares'])))} shares; {js_num(from_micro(shares))} cannot have filled")
+    if p.get("limit"):
+        at_limit = shares * int(p["limit"]) // UNIT
+        cent = 10_000
+        if p["side"] == "buy" and usdc > at_limit + cent:
+            raise ValueError(f"{fmt_usd(usdc)} for {js_num(from_micro(shares))} shares is above the BUY limit ({fmt_usd(at_limit)} max)")
+        if p["side"] == "sell" and usdc + cent < at_limit:
+            raise ValueError(f"{fmt_usd(usdc)} for {js_num(from_micro(shares))} shares is below the SELL limit ({fmt_usd(at_limit)} min)")
+
+
 def _short(a: str) -> str:
     return f"{a[:6]}…{a[-4:]}"
 
@@ -284,7 +304,9 @@ class CopyEngine:
         async def run() -> None:
             p = next((x for x in self.state.pending_orders() if x["key"] == key), None)
             if p is None:
-                raise KeyError(f"no pending order {key}")
+                raise RuntimeError(f"no pending order {key}")
+            if result:
+                validate_reconcile(p, result)
             self.state.remove_pending_order(key)
             if result and result[0] > 0:
                 self._book(p, TradeFill(shares=result[0], usdc=result[1], orderIds=[p["orderId"]] if p.get("orderId") else []))
@@ -295,6 +317,8 @@ class CopyEngine:
 
     def _book(self, p: dict[str, Any], f: TradeFill) -> None:
         """Apply a fill to the books. BUY fees are taken in shares, so the position is what actually landed."""
+        # inventory on this outcome just changed: earlier "nothing there" readings no longer count
+        self.state.update_pending_exit(p["target"], p["tokenId"], lowBalanceReads=0, lowBalanceSince=None)
         for oid in f.orderIds:
             if oid:
                 self.state.mark_booked(oid)
@@ -313,8 +337,10 @@ class CopyEngine:
         target, token_id = exit_["target"], exit_["tokenId"]
         base = {"eventId": exit_["eventId"], "target": target, "tokenId": token_id, "side": "SELL"}
 
-        def retry(decision: str, **extra: Any) -> None:
-            state.update_pending_exit(target, token_id, attempts=exit_["attempts"] + 1, nextAt=self.now() + self._exit_delay(exit_["attempts"]))
+        # every retry except a low-balance reading breaks the run of low readings
+        def retry(decision: str, low_run: Optional[tuple[int, float]] = None, **extra: Any) -> None:
+            state.update_pending_exit(target, token_id, attempts=exit_["attempts"] + 1, nextAt=self.now() + self._exit_delay(exit_["attempts"]),
+                                      lowBalanceReads=low_run[0] if low_run else 0, lowBalanceSince=low_run[1] if low_run else None)
             self._record({**base, "decision": decision, "attempt": exit_["attempts"] + 1, **extra}, "warn")
 
         def done(decision: str, level: str = "info", **extra: Any) -> None:
@@ -370,10 +396,15 @@ class CopyEngine:
         if shares <= 0:
             # The balance endpoint can lag a fill we have just booked (a late BUY, a fresh reconcile). One reading of
             # "not there" is not proof: retry, and only give up once it has held for a while.
-            settled = exit_["attempts"] + 1 >= BALANCE_CONFIRM_ATTEMPTS and self.now() - exit_["firstAt"] >= BALANCE_CONFIRM_MS
-            if not settled or self._pending_buy(target, token_id):
-                return retry("exit_retry_zero_balance" if balance == 0 else "exit_retry_balance_short",
-                             balance=from_micro(balance), bookedToOthers=from_micro(others))
+            if self._pending_buy(target, token_id):
+                # inventory on this outcome may still change: this reading proves nothing, start over after
+                return retry("exit_retry_balance_short_buy_pending", balance=from_micro(balance), bookedToOthers=from_micro(others))
+            since = exit_.get("lowBalanceSince")
+            run = ((exit_.get("lowBalanceReads") or 0) + 1, since if since is not None else self.now())
+            settled = run[0] >= BALANCE_CONFIRM_ATTEMPTS and self.now() - run[1] >= BALANCE_CONFIRM_MS
+            if not settled:
+                return retry("exit_retry_zero_balance" if balance == 0 else "exit_retry_balance_short", run,
+                             balance=from_micro(balance), bookedToOthers=from_micro(others), lowReads=run[0])
             if balance == 0:
                 state.drop(target, token_id)
                 return done("exit_no_balance")

@@ -89,3 +89,31 @@ def test_not_even_a_candidate():
     for t in (T(size="11"), T(price="0.52"), T(trader_side="MAKER"), T(match_time="1789999000")):
         assert attribute_fills([t], None, SINCE, match()).candidates == []
     assert attribute_fills([T()], None, SINCE, match(booked=("0xa",))).candidates == []
+
+
+class BalanceClob:
+    def __init__(self, update, balance="0"):
+        self.update, self.balance = update, balance
+
+    def update_balance_allowance(self, params):
+        if isinstance(self.update, Exception):
+            raise self.update
+        return self.update
+
+    def get_balance_allowance(self, params):
+        return {"balance": self.balance}
+
+
+async def test_token_balance_failed_refresh_fails_the_read():
+    def gw(update, balance="0"):
+        g = PolymarketGateway(PolymarketConfig(clobUrl="http://x", signatureType=0), Silent())
+        g.clob = BalanceClob(update, balance)
+        return g
+
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        await gw({"error": "internal"}).token_balance("T")
+    with pytest.raises(PolyApiException):  # py-clob-client-v2 raises on HTTP errors: it propagates
+        await gw(PolyApiException(httpx.Response(500, content=b'{"error":"internal"}'))).token_balance("T")
+    with pytest.raises(httpx.ConnectError, match="ECONNRESET"):
+        await gw(httpx.ConnectError("ECONNRESET")).token_balance("T")
+    assert await gw("", "19000000").token_balance("T") == 19_000_000

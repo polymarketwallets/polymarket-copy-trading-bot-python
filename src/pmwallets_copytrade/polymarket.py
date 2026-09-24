@@ -370,11 +370,12 @@ class PolymarketGateway:
 
         clob = self._require_clob()
         params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
-        # the CLOB caches balances server-side; ask it to re-read the chain first (best effort)
-        try:
-            await asyncio.to_thread(clob.update_balance_allowance, params)
-        except Exception:
-            pass  # read what it has
+        # The CLOB caches balances server-side: make it re-read the chain first. If that fails, the reading would be the
+        # same possibly-stale cache — fail the read instead of letting it count as a fresh one. (py-clob-client-v2 raises
+        # on HTTP errors, which propagates; an error body is checked too.)
+        upd = await asyncio.to_thread(clob.update_balance_allowance, params)
+        if isinstance(upd, dict) and (upd.get("error") or upd.get("errorMsg")):
+            raise RuntimeError(f"balance refresh failed: {str(upd.get('errorMsg') or upd.get('error'))[:200]}")
         r = await asyncio.to_thread(clob.get_balance_allowance, params)
         if isinstance(r, dict) and (r.get("error") or r.get("errorMsg")):
             raise RuntimeError(str(r.get("errorMsg") or r.get("error")))
