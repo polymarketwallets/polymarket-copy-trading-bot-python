@@ -229,6 +229,38 @@ async def test_unconfirmed_buy_blocks_a_second_buy(tmp_path):
     assert h.kinds() == ["buy_submitted", "buy_unconfirmed", "skipped_order_unconfirmed"]
 
 
+def unknown_post():
+    return lambda s, l: OrderOutcome("", "unknown", reason="post_error", recheck=True)
+
+
+async def test_unconfirmed_buys_hold_budget_and_position_slot(tmp_path):
+    h = H(tmp_path / "a", {**LIVE, "risk": {"maxDailySpendUsdc": 15}})
+    h.ex.buy_result = unknown_post()
+    await h.engine.on_fill(fill(tokenId="TOK"), WS)
+    await h.engine.on_fill(fill(tokenId="TOK2"), WS)
+    assert h.kinds()[-1] == "skipped_daily_spend_cap"
+    assert len(h.ex.buys) == 1
+    g = H(tmp_path / "b", {**LIVE, "copy": {"maxOpenPositions": 1}})
+    g.ex.buy_result = unknown_post()
+    await g.engine.on_fill(fill(tokenId="TOK"), WS)
+    await g.engine.on_fill(fill(tokenId="TOK2"), WS)
+    assert g.kinds()[-1] == "skipped_position_cap"
+
+
+async def test_ambiguous_match_is_never_booked(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.ex.buy_result = unknown_post()
+    await h.engine.on_fill(fill(), WS)
+    h.ex.late_fill = TradeFill(ambiguous=True)
+    for _ in range(20):
+        if not h.state.pending_orders():
+            break
+        h.clock["t"] += 60_000
+        await h.engine.tick()
+    assert h.state.positions() == []
+    assert h.last()["decision"] == "order_needs_reconcile"
+
+
 async def test_killed_order_that_filled_is_booked_by_tick_even_after_restart(tmp_path):
     h = H(tmp_path, LIVE)
     h.ex.buy_result = killed(reason="order couldn't be fully filled")
@@ -333,6 +365,20 @@ async def test_pending_exit_survives_a_restart(tmp_path):
     h.clock["t"] += 1_000
     await again.tick()
     assert len(h.ex.sells) == 1
+
+
+async def test_paused_market_keeps_the_exit(tmp_path):
+    from dataclasses import replace
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(), WS)
+    h.ex.market_ = replace(h.ex.market_, acceptingOrders=False)
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    assert h.last()["decision"] == "exit_retry_market_paused"
+    h.ex.market_ = replace(h.ex.market_, acceptingOrders=True)
+    h.clock["t"] += 1_000
+    await h.engine.tick()
+    assert len(h.ex.sells) == 1
+    assert h.state.positions() == []
 
 
 async def test_old_sell_still_exits(tmp_path):

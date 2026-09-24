@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable, Optional, Protocol, TypeVar
 from .config import Config, TargetConfig
 from .filters import book_gate, market_gate, slippage_gate
 from .log import Logger
-from .polymarket import Book, FillMatch, Market, OrderOutcome, TradeFill
+from .polymarket import Book, Market, OrderMatch, OrderOutcome, TradeFill
 from .state import BotState
 from .units import UNIT, clamp_limit, fmt_usd, from_micro, parse_fill_ts, round_buy_shares, to_micro
 
@@ -42,7 +42,7 @@ class Exchange(Protocol):
     async def orderbook(self, token_id: str) -> Book: ...
     async def buy_fok(self, token_id: str, condition_id: str, limit: int, shares: int) -> OrderOutcome: ...
     async def sell_fak(self, token_id: str, condition_id: str, limit: int, shares: int) -> OrderOutcome: ...
-    async def fills_of(self, order_id: Optional[str], condition_id: str, since_ms: float, match: Optional[FillMatch] = None) -> TradeFill: ...
+    async def fills_of(self, order_id: Optional[str], condition_id: str, since_ms: float, match: Optional[OrderMatch] = None) -> TradeFill: ...
     async def token_balance(self, token_id: str) -> int: ...
 
 
@@ -180,18 +180,21 @@ class CopyEngine:
         max_buys = tcfg.maxBuysPerOutcome if tcfg and tcfg.maxBuysPerOutcome is not None else cfg.copy.maxBuysPerOutcome
         if held and held["buyCount"] >= max_buys:
             return self._decide(base, "skipped_max_buys_per_outcome", buyCount=held["buyCount"])
+        # an order still being confirmed on this outcome counts as open: buying again could double up
+        if any(p["target"] == target and p["tokenId"] == fill["tokenId"] and p["side"] == "buy" for p in state.pending_orders()):
+            return self._decide(base, "skipped_order_unconfirmed")
+        # the caps count unconfirmed BUYs too: each may turn out filled, and all of them together must still fit
+        # inside the limits the user set
         if not held:
-            open_ = state.positions()
+            open_ = state.open_outcomes()
             if len([p for p in open_ if p["target"] == target]) >= cfg.copy.maxOpenPositionsPerTarget:
                 return self._decide(base, "skipped_target_position_cap")
             if len(open_) >= cfg.copy.maxOpenPositions:
                 return self._decide(base, "skipped_position_cap")
-        # an order still being confirmed on this outcome counts as open: buying again could double up
-        if any(p["target"] == target and p["tokenId"] == fill["tokenId"] and p["side"] == "buy" for p in state.pending_orders()):
-            return self._decide(base, "skipped_order_unconfirmed")
         budget = to_micro(tcfg.orderSizeUsdc if tcfg and tcfg.orderSizeUsdc is not None else cfg.copy.orderSizeUsdc)
-        if cfg.risk.maxDailySpendUsdc > 0 and state.spent_today(self._dt()) + budget > to_micro(cfg.risk.maxDailySpendUsdc):
-            return self._decide(base, "skipped_daily_spend_cap", spentToday=fmt_usd(state.spent_today(self._dt())))
+        committed = state.spent_today(self._dt()) + state.reserved_usdc()
+        if cfg.risk.maxDailySpendUsdc > 0 and committed + budget > to_micro(cfg.risk.maxDailySpendUsdc):
+            return self._decide(base, "skipped_daily_spend_cap", spentToday=fmt_usd(state.spent_today(self._dt())), reserved=fmt_usd(state.reserved_usdc()))
 
         try:
             condition_id = held["conditionId"] if held else await ex.condition_id_for(fill["tokenId"])
@@ -230,7 +233,9 @@ class CopyEngine:
 
         key = f"buy|{fill['eventId']}"
         now = self.now()
-        self._commit_order(fill["eventId"], {"key": key, "side": "buy", "orderId": None, **pos, "sentAt": now, "attempts": 0, "nextAt": now + self._recheck_delay(0)},
+        reserve = shares * limit // UNIT
+        self._commit_order(fill["eventId"], {"key": key, "side": "buy", "orderId": None, **pos, "shares": str(shares), "limit": str(limit),
+                                             "reserveUsdc": str(reserve), "sentAt": now, "attempts": 0, "nextAt": now + self._recheck_delay(0)},
                            {**base, "decision": "buy_submitted", "limit": from_micro(limit), "shares": from_micro(shares)})
         r = await ex.buy_fok(fill["tokenId"], condition_id, limit, shares)
         self._after_order(key, r, base, {"market": market.question, "outcome": outcome.outcome})
@@ -299,9 +304,13 @@ class CopyEngine:
             book = await ex.orderbook(token_id)
         except Exception as e:
             return retry("exit_retry_lookup_failed", reason=str(e)[:200])
+        # resolved: the settlement sweep takes it from here. Paused (inactive / not accepting orders) is temporary —
+        # keep the exit and try again, or a pause during the target's SELL strands us in it.
+        if market.closed:
+            return done("exit_dropped_market_closed")
         mg = market_gate(market, "sell", cfg.copy, self.now())
         if not mg["ok"]:
-            return done("exit_dropped_market", reason=mg["reason"])  # resolved or halted: settlement takes it from here
+            return retry("exit_retry_market_paused", reason=mg["reason"])
         bg = book_gate(book, "sell", cfg.copy)
         if not bg["ok"]:
             return retry("exit_retry_no_bids")
@@ -333,6 +342,7 @@ class CopyEngine:
         now = self.now()
         self._commit_order(None, {"key": key, "side": "sell", "orderId": None, "target": target, "tokenId": token_id, "conditionId": held["conditionId"],
                                   **{k: held[k] for k in ("question", "outcome") if held.get(k) is not None},
+                                  "shares": str(shares), "limit": str(clamp_limit(bid, book.tickSize)), "reserveUsdc": "0",
                                   "sentAt": now, "attempts": 0, "nextAt": now + self._recheck_delay(0)},
                            {**base, "decision": "sell_submitted", "limit": from_micro(bid), "shares": from_micro(shares)})
         r = await ex.sell_fak(token_id, held["conditionId"], bid, shares)
@@ -356,12 +366,24 @@ class CopyEngine:
                     continue
                 try:
                     since = p["sentAt"] - 30_000 if p["orderId"] else p["sentAt"] - 5_000
-                    f = await ex.fills_of(p["orderId"], p["conditionId"], since, FillMatch(p["tokenId"], p["side"], state.is_booked))
+                    f = await ex.fills_of(p["orderId"], p["conditionId"], since,
+                                          OrderMatch(p["tokenId"], p["side"], int(p.get("shares") or 0), int(p.get("limit") or 0), state.is_booked))
                 except Exception as e:
                     if now - p["sentAt"] > RECHECK_GIVE_UP_MS:
                         state.remove_pending_order(p["key"])
                         self._record({"eventId": f"recheck:{p['key']}", "target": p["target"], "decision": "order_unverified", "side": p["side"],
                                       "orderId": p["orderId"], "tokenId": p["tokenId"], "reason": str(e)[:200]}, "error")
+                    else:
+                        state.update_pending_order(p["key"], attempts=p["attempts"] + 1, nextAt=now + self._recheck_delay(p["attempts"] + 1))
+                        state.save()
+                    continue
+                if f.ambiguous:
+                    # several orders could be ours: booking any of them could book a manual trade. Keep the reservation
+                    # and ask a human once it is clear the ambiguity will not resolve itself.
+                    if p["attempts"] + 1 >= RECHECK_ATTEMPTS and now - p["sentAt"] >= RECHECK_MIN_AGE_MS:
+                        state.remove_pending_order(p["key"])
+                        self._record({"eventId": f"recheck:{p['key']}", "target": p["target"], "decision": "order_needs_reconcile", "side": p["side"],
+                                      "tokenId": p["tokenId"], "reason": "more than one unattributed order matches what was sent"}, "error")
                     else:
                         state.update_pending_order(p["key"], attempts=p["attempts"] + 1, nextAt=now + self._recheck_delay(p["attempts"] + 1))
                         state.save()

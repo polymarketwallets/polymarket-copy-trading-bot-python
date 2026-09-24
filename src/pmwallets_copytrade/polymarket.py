@@ -78,15 +78,40 @@ class TradeFill:
     feeUsdc: int = 0
     feeShares: int = 0
     orderIds: list[str] = field(default_factory=list)
+    ambiguous: bool = False  # unknown-id lookup found more than one order that could be ours: nothing attributed
 
 
 @dataclass
-class FillMatch:
-    """How to recognise our fills when the order id never came back."""
+class OrderMatch:
+    """What the unknown-id lookup must match: the order exactly as we sent it."""
 
     tokenId: str
     side: str  # "buy" | "sell"
+    shares: int
+    limit: int
     is_booked: Callable[[str], bool]
+
+
+def classify_post(http: Optional[int], body: Any) -> str:
+    """How to read what posting an order gave back — shared rule with the Node bot (testdata/post-classification.json).
+
+    `http` is the HTTP status (None = no response at all), `body` the parsed body. With py-clob-client-v2 a 2xx comes
+    back as the returned dict, an HTTP error as PolyApiException(status_code, error_msg=parsed body or text), and a
+    transport failure as an exception without a status.
+      answer   — a body carrying an order id, or a 2xx without an error: the exchange took the order; read it
+      rejected — a 4xx with a readable error, or a 2xx success=false with an error message: nothing can fill
+      unknown  — everything else (5xx, gateway pages, empty/unreadable bodies, transport errors): may have filled
+    """
+    if http is None or not isinstance(body, dict):
+        return "unknown"
+    if body.get("orderID") or body.get("orderId"):
+        return "answer"
+    err = body.get("errorMsg") or body.get("error")
+    if 200 <= http < 300:
+        return "rejected" if err else "answer"
+    if 400 <= http < 500 and isinstance(err, str) and err.strip():
+        return "rejected"
+    return "unknown"
 
 
 def trade_time_ms(v: Any) -> float:
@@ -242,13 +267,6 @@ class PolymarketGateway:
     def _failed(reason: str) -> OrderOutcome:
         return OrderOutcome(orderId="", status="failed", reason=reason)
 
-    @staticmethod
-    def _error_body(e: Exception) -> Optional[dict[str, Any]]:
-        """py-clob-client-v2 raises on any non-200, but the FOK/FAK zero-fill answer is a 400 whose body
-        carries the orderID — hand that body to settle() exactly like the TS client's returned body."""
-        body = getattr(e, "error_msg", None)
-        return body if isinstance(body, dict) else None
-
     async def buy_fok(self, token_id: str, condition_id: str, limit: int, shares: int) -> OrderOutcome:
         """BUY exactly `shares` at `limit` or better, or nothing (FOK). Share-denominated create_order + post_order,
         NOT a USDC-budget market order: that can overfill when the book improves between our read and the match."""
@@ -284,29 +302,31 @@ class PolymarketGateway:
         return await self._post(clob, signed, OrderType.FAK, "sell", condition_id, since, size, price)
 
     async def _post(self, clob: Any, signed: Any, order_type: Any, side: str, condition_id: str, since: float, size: int, price: int) -> OrderOutcome:
-        """Once an order has left, only a definitive answer settles it. py-clob-client-v2 raises on any non-200:
-        an exception WITH a response (status code) is still the exchange's answer — its body is processed like the
-        TS client's returned body (the FOK/FAK zero-fill reply is a 400 carrying the orderID; a plain rejection is
-        'failed'). Only a transport error (no response at all) leaves it 'unknown': it may have filled."""
+        """Once an order has left, only a definitive answer settles it (see classify_post)."""
         try:
             resp = await asyncio.to_thread(clob.post_order, signed, order_type)
+            http: Optional[int] = 200
         except Exception as e:
-            if getattr(e, "status_code", None) is None:
-                return OrderOutcome(orderId="", status="unknown", reason=f"post_error: {e}"[:300], recheck=True)
-            body = self._error_body(e)
-            if body is None:
-                return self._failed(f"rejected: HTTP {getattr(e, 'status_code', '?')}: {getattr(e, 'error_msg', e)}"[:300])
-            resp = body
-        return await self._settle(resp, side, condition_id, since, size, price)
+            http = getattr(e, "status_code", None)
+            resp = getattr(e, "error_msg", None) if http is not None else None
+            if http is None:
+                return self._unknown(f"post_error: {e}")
+        kind = classify_post(http, resp)
+        if kind == "unknown":
+            import json as _json
+            return self._unknown(f"post_error: no usable answer (HTTP {http}): {_json.dumps(resp, default=str)[:200]}")
+        return await self._settle(resp, kind, side, condition_id, since, size, price)
 
-    async def _settle(self, resp: Any, side: str, condition_id: str, since: float, asked_shares: int, asked_price: int) -> OrderOutcome:
-        """Turn the post-order response into what we actually got (see the Node gateway for the full story)."""
-        if not isinstance(resp, dict):
-            return self._failed("empty_response")
-        order_id = resp.get("orderID") or resp.get("orderId") or resp.get("id") or ""
+    @staticmethod
+    def _unknown(reason: str) -> OrderOutcome:
+        return OrderOutcome(orderId="", status="unknown", reason=reason[:300], recheck=True)
+
+    async def _settle(self, resp: dict[str, Any], kind: str, side: str, condition_id: str, since: float, asked_shares: int, asked_price: int) -> OrderOutcome:
+        """Turn an answer into what we actually got (see the Node gateway for the full story)."""
+        order_id = resp.get("orderID") or resp.get("orderId") or ""
         err = str(resp.get("errorMsg") or resp.get("error") or "")
-        if err and not order_id:
-            return self._failed(err)
+        if kind == "rejected":
+            return self._failed(err[:300])
         if err and _ZERO_FILL.search(err):
             return OrderOutcome(orderId=order_id, status="none", reason=err[:200], recheck=True)
         if err:
@@ -333,41 +353,14 @@ class PolymarketGateway:
         net = fill.shares - fill.feeShares if side == "buy" else fill.shares
         return OrderOutcome(orderId=order_id, status="filled", shares=fill.shares, usdc=fill.usdc, feeUsdc=fill.feeUsdc, netShares=net)
 
-    async def fills_of(self, order_id: Optional[str], condition_id: str, since_ms: float, match: Optional[FillMatch] = None) -> TradeFill:
-        """Our taker fills for one order — or, when the order id never came back (`order_id` None), the taker fills in
-        this token and side since `since_ms` not attributed to any order already booked. The CLOB cannot filter
-        trades by order id, so scope by market + time and match here, all pages. BUY taker fees are charged in
-        shares: size × fee_rate_bps / 10000, converted at the fill price."""
+    async def fills_of(self, order_id: Optional[str], condition_id: str, since_ms: float, match: Optional[OrderMatch] = None) -> TradeFill:
+        """Our fills for one order (see attribute_fills). The CLOB cannot filter trades by order id, so scope by
+        market + time, all pages."""
         clob = self._require_clob()
         from py_clob_client_v2 import TradeParams
 
         trades = await asyncio.to_thread(clob.get_trades, TradeParams(market=condition_id, after=int(since_ms // 1000)), False)
-        out = TradeFill()
-        oid = order_id.lower() if order_id else None
-        for t in trades if isinstance(trades, list) else []:
-            taker = str(t.get("taker_order_id") or "").lower()
-            if oid:
-                if taker != oid:
-                    continue
-            else:
-                if match is None or not taker or match.is_booked(taker):
-                    continue
-                if str(t.get("trader_side") or "").upper() != "TAKER":
-                    continue
-                if str(t.get("asset_id")) != match.tokenId or str(t.get("side") or "").lower() != match.side:
-                    continue
-                if trade_time_ms(t.get("match_time")) < since_ms:
-                    continue
-            size = to_micro(t["size"])
-            price = to_micro(t["price"])
-            fee_shares = size * int(t.get("fee_rate_bps") or 0) // 10_000
-            out.shares += size
-            out.usdc += size * price // UNIT
-            out.feeShares += fee_shares
-            out.feeUsdc += fee_shares * price // UNIT
-            if taker not in out.orderIds:
-                out.orderIds.append(taker)
-        return out
+        return attribute_fills(trades if isinstance(trades, list) else [], order_id, since_ms, match)
 
     async def token_balance(self, token_id: str) -> int:
         from py_clob_client_v2 import AssetType, BalanceAllowanceParams
@@ -384,3 +377,63 @@ class PolymarketGateway:
         if isinstance(r, dict) and (r.get("error") or r.get("errorMsg")):
             raise RuntimeError(str(r.get("errorMsg") or r.get("error")))
         return _to_micro_balance(r["balance"]) if isinstance(r, dict) and r.get("balance") else 0
+
+
+def _add(out: TradeFill, t: dict[str, Any]) -> None:
+    # BUY taker fees are charged in shares: size × fee_rate_bps / 10000, converted at the fill price
+    size = to_micro(t["size"])
+    price = to_micro(t["price"])
+    fee_shares = size * int(t.get("fee_rate_bps") or 0) // 10_000
+    out.shares += size
+    out.usdc += size * price // UNIT
+    out.feeShares += fee_shares
+    out.feeUsdc += fee_shares * price // UNIT
+
+
+def attribute_fills(trades: list[dict[str, Any]], order_id: Optional[str], since_ms: float, match: Optional[OrderMatch] = None) -> TradeFill:
+    """Our fills for one order, from our own trade history.
+
+    Known order id: every trade whose taker_order_id is it. Unknown id (the post never answered): the order is
+    recognised only if EXACTLY ONE unattributed taker order in this token and side, since the send time, is
+    consistent with what we sent — no more shares than we asked for, every fill at our limit or better. Zero
+    candidates → nothing; two or more → `ambiguous`, nothing attributed: a manual trade or another pending order
+    must never be booked to this one.
+    """
+    if order_id:
+        out = TradeFill()
+        oid = order_id.lower()
+        for t in trades:
+            if str(t.get("taker_order_id") or "").lower() == oid:
+                _add(out, t)
+        if out.shares > 0:
+            out.orderIds.append(oid)
+        return out
+    if match is None:
+        return TradeFill()
+    by_order: dict[str, list[dict[str, Any]]] = {}
+    for t in trades:
+        taker = str(t.get("taker_order_id") or "").lower()
+        if not taker or match.is_booked(taker):
+            continue
+        if str(t.get("trader_side") or "").upper() != "TAKER":
+            continue
+        if str(t.get("asset_id")) != match.tokenId or str(t.get("side") or "").lower() != match.side:
+            continue
+        if trade_time_ms(t.get("match_time")) < since_ms:
+            continue
+        by_order.setdefault(taker, []).append(t)
+    candidates: list[TradeFill] = []
+    for oid, ts in by_order.items():
+        out = TradeFill()
+        within = True
+        for t in ts:
+            px = to_micro(t["price"])
+            if (px > match.limit) if match.side == "buy" else (px < match.limit):
+                within = False
+            _add(out, t)
+        if within and out.shares <= match.shares:
+            out.orderIds.append(oid)
+            candidates.append(out)
+    if len(candidates) == 1:
+        return candidates[0]
+    return TradeFill(ambiguous=True) if candidates else TradeFill()

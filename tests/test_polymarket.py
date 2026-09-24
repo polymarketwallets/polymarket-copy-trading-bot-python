@@ -1,0 +1,97 @@
+import json
+from pathlib import Path
+
+import httpx
+import pytest
+from py_clob_client_v2.exceptions import PolyApiException
+
+from pmwallets_copytrade.config import PolymarketConfig
+from pmwallets_copytrade.polymarket import OrderMatch, PolymarketGateway, attribute_fills, classify_post
+from pmwallets_copytrade.units import to_micro
+
+CASES = json.loads((Path(__file__).resolve().parents[3] / "testdata" / "post-classification.json").read_text())["cases"]
+
+
+class Silent:
+    def info(self, *a, **k): ...
+    def warn(self, *a, **k): ...
+    def error(self, *a, **k): ...
+
+
+class FakeClob:
+    """py-clob-client-v2 as it really behaves: a 2xx is the returned dict; an HTTP error raises
+    PolyApiException(response); no response at all raises a transport error."""
+
+    def __init__(self, http, body):
+        self.http, self.body = http, body
+
+    def create_order(self, args):
+        return object()
+
+    def post_order(self, signed, order_type):
+        if self.http is None:
+            raise httpx.ConnectError("socket hang up")
+        if 200 <= self.http < 300:
+            return self.body
+        content = b"" if self.body is None else (self.body.encode() if isinstance(self.body, str) else json.dumps(self.body).encode())
+        raise PolyApiException(httpx.Response(self.http, content=content))
+
+    def get_trades(self, params, only_first_page=False):
+        return []
+
+
+# what each classification must turn into at the gateway's output
+OUTCOME = {"answer": {"filled", "none"}, "rejected": {"failed"}, "unknown": {"unknown"}}
+
+
+@pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
+async def test_post_classification_contract_through_the_gateway(case):
+    gw = PolymarketGateway(PolymarketConfig(), Silent())
+    gw.clob = FakeClob(case["http"], case["body"])
+    r = await gw.buy_fok("TOK", "CID", to_micro("0.5"), to_micro(10))
+    assert r.status in OUTCOME[case["expect"]], (case["name"], r)
+
+
+def test_classify_post_rule():
+    for c in CASES:
+        # the pair the gateway hands to classify_post: (status, parsed body) — a PolyApiException carries resp.json() or the text
+        body = c["body"] if isinstance(c["body"], dict) else (c["body"] or "")
+        assert classify_post(c["http"], body if c["http"] is not None else None) == c["expect"], c["name"]
+
+
+def T(**o):
+    t = {"taker_order_id": "0xa", "trader_side": "TAKER", "asset_id": "TOK", "side": "BUY", "size": "10", "price": "0.50",
+         "fee_rate_bps": "0", "match_time": "1790000000"}
+    t.update(o)
+    return t
+
+
+def match(shares=None, limit=None, booked=()):
+    return OrderMatch("TOK", "buy", shares if shares is not None else to_micro(10), limit if limit is not None else to_micro("0.51"),
+                      lambda i: i in booked)
+
+
+SINCE = 1_790_000_000_000 - 1000
+
+
+def test_known_id_every_trade_of_that_order():
+    f = attribute_fills([T(), T(taker_order_id="0xb"), T(size="5")], "0xA", 0)
+    assert f.shares == to_micro(15) and f.orderIds == ["0xa"]
+
+
+def test_unknown_id_single_consistent_candidate():
+    f = attribute_fills([T(), T(taker_order_id="0xz", asset_id="OTHER")], None, SINCE, match())
+    assert f.shares == to_micro(10) and f.orderIds == ["0xa"]
+
+
+def test_not_ours():
+    assert attribute_fills([T(size="11")], None, SINCE, match()).shares == 0
+    assert attribute_fills([T(price="0.52")], None, SINCE, match()).shares == 0
+    assert attribute_fills([T(trader_side="MAKER")], None, SINCE, match()).shares == 0
+    assert attribute_fills([T(match_time="1789999000")], None, SINCE, match()).shares == 0
+    assert attribute_fills([T()], None, SINCE, match(booked=("0xa",))).shares == 0
+
+
+def test_ambiguous():
+    f = attribute_fills([T(), T(taker_order_id="0xb", size="4")], None, SINCE, match())
+    assert f.ambiguous and f.shares == 0

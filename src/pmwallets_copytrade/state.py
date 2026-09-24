@@ -138,6 +138,21 @@ class BotState:
     def pending_orders(self) -> list[dict[str, Any]]:
         return self.data["pendingOrders"]
 
+    def reserved_usdc(self) -> int:
+        """USDC reserved by BUYs whose outcome is not known yet (held against the daily cap)"""
+        return sum(int(p.get("reserveUsdc") or "0") for p in self.data["pendingOrders"] if p["side"] == "buy")
+
+    def open_outcomes(self) -> list[dict[str, str]]:
+        """(target, token) pairs that are open or may be about to be: booked positions plus unconfirmed BUYs"""
+        seen: set[str] = set()
+        out: list[dict[str, str]] = []
+        for x in self.positions() + [p for p in self.data["pendingOrders"] if p["side"] == "buy"]:
+            k = pos_key(x["target"], x["tokenId"])
+            if k not in seen:
+                seen.add(k)
+                out.append({"target": x["target"], "tokenId": x["tokenId"]})
+        return out
+
     def add_pending_order(self, p: dict[str, Any]) -> None:
         self.data["pendingOrders"] = [x for x in self.data["pendingOrders"] if x["key"] != p["key"]] + [p]
 
