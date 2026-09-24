@@ -88,6 +88,22 @@
   {
    "name": "section given a list: polymarket",
    "yaml": "pmwallets: {apiKey: pmw_a_b}\npolymarket:\n  - a\n"
+  },
+  {
+   "name": "duplicate key: copy.orderSizeUsdc",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ncopy:\n  orderSizeUsdc: 10\n  orderSizeUsdc: 100000\n"
+  },
+  {
+   "name": "duplicate key: risk.maxDailySpendUsdc",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\nrisk:\n  maxDailySpendUsdc: 50\n  maxDailySpendUsdc: 5000\n"
+  },
+  {
+   "name": "duplicate key: top-level mode",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\nmode: dry-run\nmode: live\n"
+  },
+  {
+   "name": "duplicate key inside a target",
+   "yaml": "pmwallets: {apiKey: pmw_a_b}\ntargets:\n  - entity: \"0x1111111111111111111111111111111111111111\"\n    orderSizeUsdc: 5\n    orderSizeUsdc: 500\n"
   }
  ]
 }

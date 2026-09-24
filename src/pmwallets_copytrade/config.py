@@ -269,6 +269,23 @@ def check_trading_config(c: Config) -> None:
         raise ValueError("this signatureType needs polymarket.funderAddress: the account wallet address shown in the polymarket.com profile menu")
 
 
+class _StrictLoader(yaml.BaseLoader):
+    """BaseLoader (every scalar a string) that refuses a key given twice in one mapping.
+
+    Plain BaseLoader keeps the last value, so two `orderSizeUsdc:` lines would silently trade the second
+    amount; the Node bot's YAML parser refuses the document, and so must this one.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}", key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def load_config(path: str, env: Optional[Mapping[str, str]] = None) -> Config:
     with open(path, encoding="utf8") as f:
         text = f.read()
@@ -277,5 +294,8 @@ def load_config(path: str, env: Optional[Mapping[str, str]] = None) -> Config:
     # base loader: every scalar stays a string. The default loader reads an unquoted 0x… value — a private key or an
     # address, typically substituted from the environment — as a hex NUMBER, which destroys it. Numbers are converted
     # by build_config's own validation, which accepts strings.
-    doc = yaml.load(substitute_env(without_comments, env), Loader=yaml.BaseLoader)
+    try:
+        doc = yaml.load(substitute_env(without_comments, env), Loader=_StrictLoader)
+    except yaml.YAMLError as e:
+        raise ValueError(f"{path} is not valid YAML: {str(e).splitlines()[0]}") from None
     return build_config({} if doc is None else doc)
