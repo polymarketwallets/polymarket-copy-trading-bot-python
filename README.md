@@ -79,9 +79,10 @@ rejected order.
   and hands it to you to `reconcile`;
 - resolved markets are swept every 10 minutes so they stop counting against the caps.
 
-**One stream per account.** PMWallets allows one WebSocket per account and the newest connection wins, so the bot
-and the live-feed page on pmwallets.com (or a second bot) will take the stream from each other. Run one consumer
-per account.
+**One stream per account, and the bot comes first.** PMWallets keeps one WebSocket per account. A connection made
+with an API key (the bot) takes priority: the live-feed page on pmwallets.com never takes the stream from it — while
+the bot is connected the page says so and stays off. Two bots on one account still replace each other (the newest
+wins), so run one bot per account.
 
 ## Configuration
 

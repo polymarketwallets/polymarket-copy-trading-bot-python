@@ -116,7 +116,7 @@ async def _run_locked(cfg: Config, log: Logger, client: AsyncClient, exchange: P
         elif t == "replayed" and e.get("delivered"):
             log.info("replay done", {"delivered": e["delivered"]})
         elif t == "replaced":
-            log.warn("another connection with this API account took over the stream (one per account) — close the other bot or the browser feed page")
+            log.warn("another bot using this API account took over the stream (one per account; the newest API connection wins) — stop the other one")
         elif t == "disconnected":
             log.warn("stream disconnected; reconnecting", {"code": e["code"], **({"reason": e["reason"]} if e.get("reason") else {})})
         elif t == "error":
