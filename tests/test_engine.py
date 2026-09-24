@@ -471,6 +471,24 @@ async def test_sell_during_unconfirmed_buy_is_kept_and_executed_once_filled(tmp_
     assert BotState(h.dir, "live").positions() == []
 
 
+async def test_exit_outlives_the_position_while_a_dca_add_is_unconfirmed(tmp_path):
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(), WS)  # first BUY: 19 shares booked
+    h.ex.buy_result = killed("o2")
+    await h.engine.on_fill(fill(), WS)  # the add is unconfirmed
+    await h.engine.on_fill(fill(side="SELL"), WS)  # target exits: the 19 are sold
+    assert h.ex.sells == [(to_micro("0.49"), 19_000_000)]
+    assert len(h.state.pending_exits()) == 1  # …but the exit stays
+    h.ex.late_fill = TradeFill(19_000_000, 9_690_000, 0, 0, ["o2"])
+    h.clock["t"] += 1_000
+    await h.engine.tick()  # the add did fill
+    h.clock["t"] += 1_000
+    await h.engine.tick()
+    assert len(h.ex.sells) == 2
+    assert h.state.positions() == []
+    assert h.state.pending_exits() == []
+
+
 async def test_sell_during_unconfirmed_buy_is_dropped_once_reconciled_as_none(tmp_path):
     h = H(tmp_path, LIVE)
     h.ex.buy_result = killed()

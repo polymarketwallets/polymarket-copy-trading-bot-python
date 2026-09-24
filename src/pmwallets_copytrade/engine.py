@@ -382,7 +382,9 @@ class CopyEngine:
         r = await ex.sell_fak(token_id, held["conditionId"], bid, shares)
         cost_of_sold = int(held["costUsdc"]) * r.shares // int(held["shares"])
         self._after_order(key, r, base, {"pnl": fmt_usd(r.usdc - r.feeUsdc - cost_of_sold)} if r.status == "filled" else {})
-        if r.status == "filled" and not state.position(target, token_id):
+        # done only when nothing is left AND no BUY on this outcome can still turn into shares (a DCA add being
+        # confirmed): otherwise its late fill would reopen a position with no exit behind it
+        if r.status == "filled" and not state.position(target, token_id) and not self._pending_buy(target, token_id):
             return done("exit_done")
         # partial, unfilled, unconfirmed or rejected: try again later
         state.update_pending_exit(target, token_id, attempts=exit_["attempts"] + 1, nextAt=self.now() + self._exit_delay(exit_["attempts"]))
