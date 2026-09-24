@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import asyncio
 import shutil
 import sys
@@ -123,7 +125,11 @@ async def _check(path: str) -> int:
             bad(f"balance is below one order (copy.orderSizeUsdc = ${js_num(cfg.copy.orderSizeUsdc)})")
             problems += 1
     except Exception as e:
-        bad(f"balance lookup failed: {e}")
+        # Polymarket's answer when the funder is not a Deposit Wallet owned by this key
+        if re.search(r"no deposit wallet found", str(e), re.I):
+            bad(f"Polymarket finds no account wallet at {cfg.polymarket.funderAddress} owned by this key — funderAddress, privateKey or signatureType is wrong")
+        else:
+            bad(f"balance lookup failed: {e}")
         problems += 1
     try:
         if await gw.closed_only():
