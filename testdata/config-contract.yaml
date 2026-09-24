@@ -1,0 +1,23 @@
+# Shared by the Node and Python test suites: both must normalise this to config-contract.expected.json.
+mode: live
+pmwallets:
+  apiKey: pmw_contract_key
+polymarket:
+  privateKey: "abababababababababababababababababababababababababababababababab"
+  signatureType: "2"
+  funderAddress: "0x1111111111111111111111111111111111111111"
+targets:
+  - "0xABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD"
+  - entity: 7KQ2MF9X4B1C
+    orderSizeUsdc: "12.5"
+    maxBuysPerOutcome: "2"
+copy:
+  orderSizeUsdc: "20"
+  maxFillAgeSec: "90"
+  minPrice: "0.1"
+  maxPrice: 0.9
+  roles: [taker]
+  sellMode: none
+risk:
+  maxDailySpendUsdc: "500"
+dataDir: ./contract-data

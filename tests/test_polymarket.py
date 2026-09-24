@@ -9,7 +9,7 @@ from pmwallets_copytrade.config import PolymarketConfig
 from pmwallets_copytrade.polymarket import OrderMatch, PolymarketGateway, attribute_fills, classify_post
 from pmwallets_copytrade.units import to_micro
 
-CASES = json.loads((Path(__file__).resolve().parents[3] / "testdata" / "post-classification.json").read_text())["cases"]
+CASES = json.loads((Path(__file__).resolve().parents[1] / "testdata" / "post-classification.json").read_text())["cases"]
 
 
 class Silent:

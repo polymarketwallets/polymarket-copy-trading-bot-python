@@ -49,7 +49,7 @@ def test_shared_config_contract():
 
     from pmwallets_copytrade.config import load_config
 
-    root = Path(__file__).resolve().parents[3] / "testdata"
+    root = Path(__file__).resolve().parents[1] / "testdata"
     c = load_config(str(root / "config-contract.yaml"), {})
     expected = json.loads((root / "config-contract.expected.json").read_text())
 

@@ -1,0 +1,14 @@
+{
+  "_doc": "How each implementation must read the result of posting an order. `http` null = no HTTP response at all (transport error). `body` = the parsed response body (null = empty/unreadable). Node receives these as the TS SDK shapes them; Python as the raised PolyApiException or the returned dict.",
+  "cases": [
+    { "name": "2xx matched", "http": 200, "body": { "success": true, "errorMsg": "", "orderID": "0xabc", "status": "matched", "takingAmount": "10", "makingAmount": "5" }, "expect": "answer" },
+    { "name": "FOK killed, order id present", "http": 400, "body": { "error": "order couldn't be fully filled. FOK orders are fully filled or killed.", "orderID": "0xabc" }, "expect": "answer" },
+    { "name": "4xx business rejection", "http": 400, "body": { "error": "not enough balance / allowance" }, "expect": "rejected" },
+    { "name": "2xx success=false with message", "http": 200, "body": { "success": false, "errorMsg": "invalid tick size" }, "expect": "rejected" },
+    { "name": "5xx with an error message", "http": 500, "body": { "error": "internal error" }, "expect": "unknown" },
+    { "name": "502 gateway html", "http": 502, "body": "<html>Bad Gateway</html>", "expect": "unknown" },
+    { "name": "4xx with no readable body", "http": 400, "body": null, "expect": "unknown" },
+    { "name": "4xx with a non-string error", "http": 400, "body": { "error": { "code": 1 } }, "expect": "unknown" },
+    { "name": "transport error", "http": null, "body": null, "expect": "unknown" }
+  ]
+}

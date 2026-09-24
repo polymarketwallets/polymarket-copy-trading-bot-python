@@ -15,8 +15,13 @@ dependencies = ["pmwallets>=0.1.0", "py-clob-client-v2>=1.1.0", "pyyaml>=6", "ht
 [project.scripts]
 pmwallets-copytrade = "pmwallets_copytrade.cli:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
 [project.urls]
 Homepage = "https://pmwallets.com/copy-trading"
+Repository = "https://github.com/polymarketwallets/polymarket-copy-trading-bot-python"
+Issues = "https://github.com/polymarketwallets/polymarket-copy-trading-bot-python/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pmwallets_copytrade"]
