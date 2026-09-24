@@ -358,7 +358,7 @@ class CopyEngine:
             return done("exit_done")
         # an exit order still being confirmed: wait for it rather than sell the same shares twice
         if any(p["target"] == target and p["tokenId"] == token_id and p["side"] == "sell" for p in state.pending_orders()):
-            state.update_pending_exit(target, token_id, nextAt=self.now() + self._exit_delay(0))
+            state.update_pending_exit(target, token_id, nextAt=self.now() + self._exit_delay(0), lowBalanceReads=0, lowBalanceSince=None)
             state.save()
             return
 
@@ -412,6 +412,8 @@ class CopyEngine:
                       {"target": _short(target), "tokenId": token_id[:16], "balance": from_micro(balance), "bookedToOthers": from_micro(others)})
             return done("exit_blocked_reconcile", "error", balance=from_micro(balance), bookedToOthers=from_micro(others))
 
+        # shares ARE there: whatever run of low readings came before is over
+        state.update_pending_exit(target, token_id, lowBalanceReads=0, lowBalanceSince=None)
         key = f"sell|{exit_['eventId']}|{exit_['attempts']}"
         now = self.now()
         self._commit_order(None, {"key": key, "side": "sell", "orderId": None, "target": target, "tokenId": token_id, "conditionId": held["conditionId"],

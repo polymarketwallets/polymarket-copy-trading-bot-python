@@ -449,6 +449,27 @@ async def test_other_retries_do_not_count_as_low_balance_readings(tmp_path):
     assert h.last()["decision"] == "exit_retry_zero_balance" and h.last()["lowReads"] == 1
 
 
+async def test_seeing_shares_ends_a_run_of_low_readings_even_if_the_sell_fails(tmp_path):
+    h = H(tmp_path, LIVE)
+    await h.engine.on_fill(fill(), WS)
+    h.ex.balance = 0
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    for _ in range(3):  # 4 low readings, 15 min
+        h.clock["t"] += 5 * 60_000
+        await h.engine.tick()
+    assert h.state.pending_exits()[0]["lowBalanceReads"] == 4
+    h.ex.balance = 19_000_000  # shares show up
+    h.ex.sell_result = lambda s, l: OrderOutcome("", "failed", reason="rejected")
+    h.clock["t"] += 5 * 60_000
+    await h.engine.tick()
+    assert h.state.pending_exits()[0]["lowBalanceReads"] == 0
+    h.ex.balance = 0  # one stale 0 again
+    h.clock["t"] += 5 * 60_000
+    await h.engine.tick()
+    assert len(h.state.positions()) == 1
+    assert h.last()["decision"] == "exit_retry_zero_balance" and h.last()["lowReads"] == 1
+
+
 async def test_low_readings_while_a_buy_is_pending_never_accumulate(tmp_path):
     h = H(tmp_path, LIVE)
     await h.engine.on_fill(fill(), WS)  # 19 booked
