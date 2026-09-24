@@ -163,7 +163,8 @@ class CopyEngine:
         state.mark_handled_tx(tx_key)
         if cfg.copy.sellMode == "none":
             return self._decide(base, "skipped_sell_mode_none")
-        if not state.position(target, fill["tokenId"]):
+        # a BUY still being confirmed may turn into a position: queue the exit anyway, it waits for the BUY
+        if not state.position(target, fill["tokenId"]) and not self._pending_buy(target, fill["tokenId"]):
             return self._decide(base, "skipped_no_position")
         now = self.now()
         state.add_pending_exit({"eventId": fill["eventId"], "target": target, "tokenId": fill["tokenId"], "firstAt": now, "attempts": 0, "nextAt": now})
@@ -264,6 +265,9 @@ class CopyEngine:
         self._record({**base, "decision": "buy_unconfirmed" if p["side"] == "buy" else "sell_unconfirmed", "orderId": r.orderId or None, "reason": r.reason},
                      "warn" if r.status == "unknown" else "info")
 
+    def _pending_buy(self, target: str, token_id: str) -> bool:
+        return any(p["side"] == "buy" and p["target"] == target and p["tokenId"] == token_id for p in self.state.pending_orders())
+
     def _needs_reconcile(self, p: dict[str, Any], reason: str) -> None:
         """Hand an order to a human. It stays pending — reservation and all — until reconcile()."""
         self.state.update_pending_order(p["key"], needsReconcile=reason)
@@ -316,6 +320,12 @@ class CopyEngine:
 
         held = state.position(target, token_id)
         if not held:
+            # the BUY that would give us the position is still being confirmed (or awaits reconcile): wait for its
+            # verdict — filled means sell it, not filled means there is nothing to exit
+            if self._pending_buy(target, token_id):
+                state.update_pending_exit(target, token_id, nextAt=self.now() + self._exit_delay(0))
+                state.save()
+                return
             return done("exit_done")
         # an exit order still being confirmed: wait for it rather than sell the same shares twice
         if any(p["target"] == target and p["tokenId"] == token_id and p["side"] == "sell" for p in state.pending_orders()):

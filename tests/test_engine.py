@@ -453,6 +453,37 @@ async def test_unconfirmed_exit_order_is_waited_for_not_doubled(tmp_path):
     assert h.state.positions() == []
 
 
+async def test_sell_during_unconfirmed_buy_is_kept_and_executed_once_filled(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.ex.buy_result = killed()
+    await h.engine.on_fill(fill(), WS)
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    assert h.last()["decision"] == "exit_queued"
+    assert h.ex.sells == []
+    # restart, then the BUY is found filled
+    again = h.restart()
+    h.ex.late_fill = TradeFill(19_000_000, 9_690_000, 0, 0, ["o9"])
+    h.clock["t"] += 1_000
+    await again.tick()
+    h.clock["t"] += 1_000
+    await again.tick()
+    assert h.ex.sells == [(to_micro("0.49"), 19_000_000)]
+    assert BotState(h.dir, "live").positions() == []
+
+
+async def test_sell_during_unconfirmed_buy_is_dropped_once_reconciled_as_none(tmp_path):
+    h = H(tmp_path, LIVE)
+    h.ex.buy_result = killed()
+    await h.engine.on_fill(fill(), WS)
+    await h.engine.on_fill(fill(side="SELL"), WS)
+    await h.engine.reconcile(h.state.pending_orders()[0]["key"], None)
+    h.clock["t"] += 60_000
+    await h.engine.tick()
+    assert h.state.pending_exits() == []
+    assert h.ex.sells == []
+    assert h.last()["decision"] == "exit_done"
+
+
 async def test_never_sells_another_targets_position(tmp_path):
     h = H(tmp_path)
     await h.engine.on_fill(fill(), WS)
