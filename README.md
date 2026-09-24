@@ -34,7 +34,7 @@ When the dry-run log looks right, switch to live:
 mode: live
 polymarket:
   privateKey: ${POLY_PRIVATE_KEY}        # signs your orders
-  signatureType: 2                       # 0 plain wallet · 1 email/Magic login · 2 browser-wallet login
+  signatureType: 2                       # 2 browser-wallet sign-up · 1 email/Google sign-up · 0 own wallet — see Configuration
   funderAddress: ${POLY_FUNDER_ADDRESS}  # your Polymarket profile address (holds the USDC)
 ```
 
@@ -82,6 +82,71 @@ rejected order.
 **One stream per account.** PMWallets allows one WebSocket per account and the newest connection wins, so the bot
 and the live-feed page on pmwallets.com (or a second bot) will take the stream from each other. Run one consumer
 per account.
+
+## Configuration
+
+`pmwallets-copytrade init` writes a commented `config.yaml`. `${NAME}` in the file is replaced by the environment
+variable `NAME`; a missing variable stops the bot at start-up. Invalid values are rejected at start-up, never
+silently ignored.
+
+### Which Polymarket account you have (`polymarket.signatureType`)
+
+This decides which private key signs your orders and which address holds your money:
+
+| `signatureType` | How the account was created | `privateKey` | `funderAddress` |
+|---|---|---|---|
+| **2** (default) | Signed up on polymarket.com **by connecting a browser wallet** (MetaMask, Coinbase Wallet, Rabby, WalletConnect…). Polymarket created a Safe wallet owned by it. | the browser wallet's key (MetaMask: *Account details → Show private key*) | your **Polymarket profile address** (the Safe) — *not* your MetaMask address |
+| **1** | Signed up on polymarket.com **with email or Google** (a Magic wallet). Polymarket created a proxy wallet. | the key polymarket.com lets you export (*Settings → Export Private Key*) | your **Polymarket profile address** (the proxy) |
+| **0** | You trade from **a plain wallet you control yourself**, and that address holds the funds. | its key | the same address (may be omitted) |
+
+If unsure: `funderAddress` is the address polymarket.com shows on your profile; the key is the wallet you log in
+with. Use an account funded only with what you are willing to let the bot trade, and keep the key in an
+environment variable rather than in `config.yaml`. The key never leaves your machine.
+
+### All options
+
+| Key | Default | What it does |
+|---|---|---|
+| `mode` | `dry-run` | `dry-run` logs every decision and simulates fills at the best price on the book; `live` sends real orders. |
+| `pmwallets.apiKey` | — (required) | Your PMWallets API key (`pmw_…`, from [pmwallets.com/keys](https://pmwallets.com/keys)). |
+| `pmwallets.baseUrl` | `https://api.pmwallets.com` | PMWallets API endpoint. |
+| `polymarket.signatureType` | `2` | Account type, see the table above. |
+| `polymarket.privateKey` | — | Key that signs your orders. Required in live mode. |
+| `polymarket.funderAddress` | — | Address that holds your funds. Required in live mode unless `signatureType` is 0. |
+| `polymarket.apiKey` / `apiSecret` / `apiPassphrase` | derived | Polymarket CLOB API credentials; derived from `privateKey` at start-up when absent. |
+| `polymarket.clobUrl` | `https://clob.polymarket.com` | Polymarket CLOB endpoint. |
+| `targets` | `[]` | Entities to copy (0x address, or board handle once you own the address). Empty = every entity your account subscribes to. |
+| `targets[].orderSizeUsdc` | `copy.orderSizeUsdc` | Per-target order size. |
+| `targets[].maxBuysPerOutcome` | `copy.maxBuysPerOutcome` | Per-target cap on BUYs into one outcome. |
+| `copy.orderSizeUsdc` | `10` | USDC spent on each copied BUY, converted to shares at the best ask and rounded down to a size the CLOB accepts. |
+| `copy.roles` | `[taker, maker]` | Copy the target's taker fills, maker fills, or both. Taker fills are easier to follow. |
+| `copy.maxBuysPerOutcome` | `3` | Copy up to this many BUYs into the same outcome (averaging in), then only hold. |
+| `copy.maxOpenPositions` | `20` | Outcomes held at once across all targets (unconfirmed BUYs count). |
+| `copy.maxOpenPositionsPerTarget` | `5` | Outcomes held at once per target. |
+| `copy.maxFillAgeSec` | `60` | A target BUY older than this when it reaches the bot is not copied (a replay after downtime must not buy history). SELLs are never too old. |
+| `copy.minTargetNotionalUsdc` | `25` | Ignore target BUYs smaller than this. |
+| `copy.minPrice` / `copy.maxPrice` | `0.05` / `0.95` | Only BUY when the best ask is inside this band. |
+| `copy.maxSlippage` | `0.03` | Skip if the best ask is more than this above the target's price (0.03 = 3 cents). |
+| `copy.minBookDepthUsdc` | `50` | Skip if the side we take holds less than this much USDC. |
+| `copy.minSecondsToEndDate` | `600` | Don't BUY a market that settles sooner than this. |
+| `copy.maxSecondsToEndDate` | `0` | Don't BUY a market that settles later than this; `0` = no limit. |
+| `copy.sellMode` | `all` | `all`: when the target sells, exit what the bot bought following that target in that outcome. `none`: hold to settlement. |
+| `risk.maxDailySpendUsdc` | `200` | Total USDC of copied BUYs per UTC day, unconfirmed orders included; `0` = no limit. |
+| `dataDir` | `./pmw-data` | Where the state, stream cursor, lock file and decision log live. |
+
+### Commands, environment and files
+
+| | |
+|---|---|
+| `pmwallets-copytrade init [file]` | Write the example config. |
+| `pmwallets-copytrade run [--config file] [--json]` | Start the bot (`--json`: one JSON log line per event). |
+| `pmwallets-copytrade status [--config file]` | Open positions, today's spend, orders still being confirmed, exits being retried. |
+| `pmwallets-copytrade reconcile [<key> --none \| <key> --filled <shares> --usdc <usdc>]` | Settle an order the bot could not verify by itself. Run with the bot stopped. |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | Honoured for the PMWallets API, the WebSocket and the Polymarket CLOB. |
+| `<dataDir>/state.<mode>.json` | Positions, decided fills, orders being confirmed, pending exits, today's spend. |
+| `<dataDir>/stream.<mode>.json` | Where the fill stream resumes after a restart. |
+| `<dataDir>/decisions.<mode>.jsonl` | Every decision, including each skip and its reason. |
+| `<dataDir>/lock.<mode>` | One bot per data directory and mode. |
 
 ## Development
 

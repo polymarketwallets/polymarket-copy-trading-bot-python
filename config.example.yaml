@@ -1,45 +1,60 @@
-# pmwallets-copytrade — copy the Polymarket traders you follow on PMWallets.
-#
-# 1. Create an API key on https://pmwallets.com/keys and subscribe to the traders you want to copy.
-# 2. Run in dry-run first (the default): every decision is logged, nothing is traded.
-# 3. When the log looks right, set `mode: live` and fill in the polymarket section.
-#
-# ${NAME} is read from the environment — keep secrets out of this file.
+# pmwallets-copytrade — configuration.
+# Every key is optional except pmwallets.apiKey (and, in live mode, the polymarket keys).
+# ${NAME} is replaced by the environment variable NAME — keep secrets out of this file.
+# Full reference: see "Configuration" in the README.
 
-mode: dry-run            # dry-run | live
+# dry-run: every decision is logged, nothing is traded (fills are simulated at the best price on the book).
+# live:    real orders with real money. Switch only after the dry-run log looks right.
+mode: dry-run
 
 pmwallets:
-  apiKey: ${PMW_API_KEY}
+  apiKey: ${PMW_API_KEY}                 # from https://pmwallets.com/keys
+  # baseUrl: https://api.pmwallets.com
 
-polymarket:
-  # only needed for live mode
-  # privateKey: ${POLY_PRIVATE_KEY}       # the key that signs your Polymarket orders
-  # signatureType: 2                       # 0 = plain EOA wallet, 1 = email/Magic login, 2 = browser-wallet login
-  # funderAddress: ${POLY_FUNDER_ADDRESS}  # your Polymarket profile address (holds the USDC)
+polymarket:                              # only read in live mode
+  # Which kind of Polymarket account you have — it decides both keys below:
+  #   2 = you signed up on polymarket.com by connecting a browser wallet (MetaMask, Coinbase Wallet, Rabby,
+  #       WalletConnect…). Polymarket created a Safe wallet owned by it.
+  #       privateKey    = that browser wallet's key (MetaMask: Account details → Show private key)
+  #       funderAddress = your Polymarket profile address (the Safe), NOT your MetaMask address
+  #   1 = you signed up on polymarket.com with email or Google (a Magic wallet). Polymarket created a proxy wallet.
+  #       privateKey    = the key polymarket.com lets you export (Settings → Export Private Key)
+  #       funderAddress = your Polymarket profile address (the proxy)
+  #   0 = you trade from a plain wallet you control yourself, and that address holds the funds (no polymarket.com
+  #       sign-up wallet in between). privateKey = its key; funderAddress = the same address (may be omitted).
+  signatureType: 2
+  # privateKey: ${POLY_PRIVATE_KEY}
+  # funderAddress: ${POLY_FUNDER_ADDRESS}
+  # Polymarket API credentials — optional: derived from privateKey at start-up when absent.
+  # apiKey: ${POLY_API_KEY}
+  # apiSecret: ${POLY_API_SECRET}
+  # apiPassphrase: ${POLY_API_PASSPHRASE}
+  # clobUrl: https://clob.polymarket.com
 
-# Leave empty to copy every entity your PMWallets account subscribes to.
+# Who to copy. Empty = every entity your PMWallets account subscribes to (subscribe on pmwallets.com or via the SDK).
 targets: []
-#  - entity: "0x9d84ce0306f8551e02efef1680475fc0f1dc1344"
-#    orderSizeUsdc: 20        # override per target
-#  - entity: "7KQ2MF9X4B1C"   # a handle works once you subscribe to it
+#  - entity: "0x9d84ce0306f8551e02efef1680475fc0f1dc1344"   # the address you see once subscribed
+#    orderSizeUsdc: 20                                     # per-target override of copy.orderSizeUsdc
+#    maxBuysPerOutcome: 1                                  # per-target override of copy.maxBuysPerOutcome
+#  - entity: "7KQ2MF9X4B1C"                                # a board handle works once you own the address
 
 copy:
-  orderSizeUsdc: 10          # USDC per mirrored BUY
-  roles: [taker, maker]      # which of the target's fills to act on
-  maxBuysPerOutcome: 3       # follow up to 3 BUYs into one outcome (DCA), then hold
-  maxOpenPositions: 20
+  orderSizeUsdc: 10          # USDC spent on each copied BUY
+  roles: [taker, maker]      # copy the target's taker fills, maker fills, or both
+  maxBuysPerOutcome: 3       # copy up to 3 BUYs into the same outcome (averaging in), then only hold
+  maxOpenPositions: 20       # outcomes held at once, all targets together
   maxOpenPositionsPerTarget: 5
-  maxFillAgeSec: 60          # older fills (e.g. replayed after downtime) are not copied
-  minTargetNotionalUsdc: 25  # ignore the target's small fills
-  minPrice: 0.05             # only BUY when the best ask is inside this band
+  maxFillAgeSec: 60          # a target BUY older than this when it reaches the bot is not copied
+  minTargetNotionalUsdc: 25  # ignore target BUYs smaller than this (bots trade $1–2 fills)
+  minPrice: 0.05             # only BUY when the best ask is inside [minPrice, maxPrice]
   maxPrice: 0.95
-  maxSlippage: 0.03          # skip if the ask is more than 3 cents above what the target paid
-  minBookDepthUsdc: 50
-  minSecondsToEndDate: 600   # don't enter a market that settles within 10 minutes
-  maxSecondsToEndDate: 0     # 0 = no upper limit
+  maxSlippage: 0.03          # skip if the best ask is more than this above what the target paid
+  minBookDepthUsdc: 50       # skip if the side we take holds less than this much USDC
+  minSecondsToEndDate: 600   # don't BUY a market that settles within 10 minutes
+  maxSecondsToEndDate: 0     # don't BUY a market that settles later than this; 0 = no limit
   sellMode: all              # all = exit when the target sells; none = hold to settlement
 
 risk:
-  maxDailySpendUsdc: 200     # total BUYs per UTC day; 0 = no limit
+  maxDailySpendUsdc: 200     # total USDC of copied BUYs per UTC day, unconfirmed orders included; 0 = no limit
 
-dataDir: ./pmw-data          # state, stream cursor and decisions.<mode>.jsonl
+dataDir: ./pmw-data          # state, stream cursor, lock file and the decisions log
