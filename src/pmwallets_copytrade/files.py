@@ -31,28 +31,33 @@ class RotatingFile:
         self._size += len(data)
 
     def _rotate(self) -> None:
+        self._size = 0  # whatever happens, the next attempt waits for another max_bytes
+        # a piece still set aside must be filed first: moving the live file onto it would overwrite it
+        if os.path.exists(self._aside) and not self._shift_in():
+            return
         try:
-            if os.path.exists(self._aside):
-                self._shift_in()
             os.replace(self.path, self._aside)
         except OSError:
-            self._size = 0  # try again after another max_bytes
             return
-        self._size = 0
         self._shift_in()
 
-    def _shift_in(self) -> None:
-        """`.rotating` becomes `.1`, the older pieces move up one, the oldest goes"""
+    def _shift_in(self) -> bool:
+        """`.rotating` becomes `.1`. The pieces above it move up only as far as the first free number, and the oldest
+        is deleted only when there is none — so a shift cut short and retried finds its own gap and deletes nothing
+        more."""
         try:
-            oldest = f"{self.path}.{self._keep}"
-            if os.path.exists(oldest):
-                os.unlink(oldest)
-            for i in range(self._keep - 1, 0, -1):
-                if os.path.exists(f"{self.path}.{i}"):
-                    os.replace(f"{self.path}.{i}", f"{self.path}.{i + 1}")
+            free = 1
+            while free <= self._keep and os.path.exists(f"{self.path}.{free}"):
+                free += 1
+            if free > self._keep:
+                os.unlink(f"{self.path}.{self._keep}")
+                free = self._keep
+            for i in range(free - 1, 0, -1):
+                os.replace(f"{self.path}.{i}", f"{self.path}.{i + 1}")
             os.replace(self._aside, f"{self.path}.1")
+            return True
         except OSError:
-            pass  # left as .rotating: the next rotation finishes it
+            return False
 
 
 def tail_of(path: str | os.PathLike[str], max_bytes: int) -> str:

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .files import RotatingFile
+from .secrets import redact
 
 MAX_REMEMBERED = 20_000
 # a busy trader yields thousands of decisions a day: keep the newest ~120 MB
@@ -207,7 +208,8 @@ class BotState:
         """Append-only audit trail: one line per decision, including every skip and its reason."""
         # `at` is the log's own timestamp: no field of an entry may overwrite it
         rest = {k: v for k, v in entry.items() if k != "at"}
-        self._decisions.append(json.dumps({"at": _iso(), **rest}, default=str) + "\n")
+        # reasons quote API and signer errors: no credential they might echo may land in the file
+        self._decisions.append(json.dumps(redact({"at": _iso(), **rest}), default=str) + "\n")
 
 
 def _alive(pid: int) -> bool:

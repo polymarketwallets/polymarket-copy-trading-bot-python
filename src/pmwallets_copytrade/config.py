@@ -298,4 +298,7 @@ def load_config(path: str, env: Optional[Mapping[str, str]] = None) -> Config:
         doc = yaml.load(substitute_env(without_comments, env), Loader=_StrictLoader)
     except yaml.YAMLError as e:
         raise ValueError(f"{path} is not valid YAML: {str(e).splitlines()[0]}") from None
-    return build_config({} if doc is None else doc)
+    cfg = build_config({} if doc is None else doc)
+    from .secrets import add_config_secrets
+    add_config_secrets(cfg, {})  # whatever the keys are called in the environment, nothing printed may show them
+    return cfg

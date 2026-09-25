@@ -121,6 +121,21 @@ def test_matches_before_json_escaping_and_in_every_0x_case_form():
     assert text == '{"e":"pw <redacted>","k":["<redacted>","<redacted>","<redacted>"]}'
 
 
+def test_keeps_them_out_of_the_decisions_file(tmp_path):
+    from pmwallets_copytrade.state import BotState
+    add_secret(KEY)
+    BotState(str(tmp_path), "live").log_decision({"decision": "buy_rejected", "reason": f"signer {KEY.upper()} refused"})
+    text = (tmp_path / "decisions.live.jsonl").read_text()
+    assert KEY[2:].upper() not in text
+    assert "signer <redacted> refused" in text
+
+
+def test_registers_the_keys_of_every_config_it_loads_whatever_the_environment_calls_them(tmp_path):
+    setup(tmp_path)
+    load_config(str(tmp_path / "config.yaml"), {"PMW_API_KEY": PMW, "POLY_PRIVATE_KEY": KEY})
+    assert redact_text(f"{PMW} {KEY}") == "<redacted> <redacted>"
+
+
 def test_never_treats_a_short_value_as_a_secret():
     add_config_secrets(None, {"MY_TOKEN": "abc", "PATH": "/usr/bin/longenough"})
     assert redact_text("abc /usr/bin/longenough") == "abc /usr/bin/longenough"

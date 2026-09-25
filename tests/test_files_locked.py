@@ -30,3 +30,28 @@ def test_rotating_a_file_that_is_open_elsewhere_never_eats_the_older_pieces(tmp_
     f.append("yyyyyyyyy\n")  # unlocked: the next rotation goes through
     assert (tmp_path / "bot.log.1").read_text() == "xxxxxxxxx\n" * 12
     assert (tmp_path / "bot.log.2").read_text() == "one\n"
+
+
+def test_a_shift_cut_short_and_finished_after_a_restart_deletes_nothing_more(tmp_path, monkeypatch):
+    p = tmp_path / "bot.log"
+    for i, t in ((1, "A\n"), (2, "B\n"), (3, "C\n")):
+        (tmp_path / f"bot.log.{i}").write_text(t)
+    fail_once = set()
+    real_replace, real_rename = os.replace, os.rename
+
+    def guard(real):
+        def move(src, dst, *a, **k):
+            if str(src) in fail_once:
+                fail_once.discard(str(src))
+                raise PermissionError("EBUSY")
+            return real(src, dst, *a, **k)
+        return move
+    monkeypatch.setattr(os, "replace", guard(real_replace))
+    monkeypatch.setattr(os, "rename", guard(real_rename))
+    f = RotatingFile(p, 10, 3)
+    f.append("LLLLLLLLL\n")
+    fail_once.add(f"{p}.1")  # .1 -> .2 fails midway: C is gone (the oldest, as it should be), B moved to .3
+    f.append("MMMMMMMMM\n")
+    RotatingFile(p, 10, 3)  # restart: files the piece set aside
+    assert [(tmp_path / f"bot.log.{i}").read_text() for i in (1, 2, 3)] == ["LLLLLLLLL\n", "A\n", "B\n"]
+    assert p.read_text() == "MMMMMMMMM\n"

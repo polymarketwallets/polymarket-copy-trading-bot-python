@@ -15,7 +15,7 @@ from . import __version__
 from .config import check_trading_config, load_config
 from .diagnose import diagnose
 from .files import RotatingFile
-from .secrets import add_config_secrets
+from .secrets import add_config_secrets, add_raw_config_secrets, redact_text
 from .log import ConsoleLogger, TeeLogger
 from .run import run
 from .state import BotState, InstanceLock
@@ -43,6 +43,40 @@ def _arg(argv: list[str], name: str, fallback: str) -> str:
         if i + 1 < len(argv):
             return argv[i + 1]
     return fallback
+
+
+class _RedactingStream:
+    """A text stream that removes every known credential from what is written to it; everything else is the wrapped
+    stream's."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def write(self, s: str) -> int:
+        self._inner.write(redact_text(s) if isinstance(s, str) else s)
+        return len(s)
+
+    def writelines(self, lines: Any) -> None:
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _guard_console(argv: list[str]) -> None:
+    """Nothing this process prints may carry a credential — terminals are captured (pm2, systemd, CI logs): register
+    what the environment and the raw config hold before anything can fail, and route stdout and stderr (our own
+    lines, library logging, interpreter tracebacks) through the redactor."""
+    add_config_secrets(None, os.environ)
+    try:
+        add_raw_config_secrets(Path(_arg(argv, "--config", "config.yaml")).read_bytes().decode("utf8", errors="replace"))
+    except OSError:
+        pass  # no config yet
+    if not isinstance(sys.stdout, _RedactingStream):
+        sys.stdout = _RedactingStream(sys.stdout)
+    if not isinstance(sys.stderr, _RedactingStream):
+        sys.stderr = _RedactingStream(sys.stderr)
 
 
 def _iso_ms(ms: float) -> str:
@@ -200,6 +234,7 @@ def _example() -> Path:
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
+    _guard_console(argv)
     cmd = argv[0] if argv else None
     try:
         if cmd == "init":
@@ -214,7 +249,6 @@ def main(argv: list[str] | None = None) -> None:
             return
         if cmd == "run":
             cfg = load_config(_arg(argv, "--config", "config.yaml"))
-            add_config_secrets(cfg, os.environ)
             log = TeeLogger(ConsoleLogger("--json" in argv), RotatingFile(Path(cfg.dataDir) / f"bot.{cfg.mode}.log", 10 * 1024 * 1024, 5))
             log.info(f"pmwallets-copytrade {__version__}", {"python": platform.python_version(), "platform": sys.platform, "arch": platform.machine()})
             try:
@@ -280,7 +314,8 @@ def main(argv: list[str] | None = None) -> None:
     except SystemExit:
         raise
     except Exception as e:
-        print(f"error: {e}", file=sys.stderr)
+        # the first line only: a YAML error goes on to quote the source line, cut short where no value match can see it
+        print(f"error: {str(e).split(chr(10))[0]}", file=sys.stderr)
         sys.exit(1)
     print(HELP)
     if cmd and cmd not in ("help", "--help"):
