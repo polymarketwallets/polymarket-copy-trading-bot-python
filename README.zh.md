@@ -41,7 +41,12 @@ polymarket:
 `pmwallets-copytrade status` 显示持仓、今日花费和仍在确认中的订单。如果机器人自己无法确认某笔订单是否成交，
 它会保留这笔订单的额度预留（后续买入不会因此突破你的上限），并请你到 polymarket.com 核对后，在机器人停止时运行
 `pmwallets-copytrade reconcile <key> --none` 或 `--filled <股数> --usdc <金额>`。每一个决策（包括每次跳过及原因）都追加写入
-`pmw-data/decisions.<mode>.jsonl`。
+`pmw-data/decisions.<mode>.jsonl`，机器人打印的所有内容也会写入 `pmw-data/bot.<mode>.log`。
+
+**出问题了？** 运行 `pmwallets-copytrade diagnose`，把生成的 `pmw-diagnose-<时间>.json.gz` 连同一句问题描述发到
+support@pmwallets.com。文件里有机器人版本、`check` 结果、去掉密钥的配置、状态文件，以及最新的日志和决策记录。
+其中**不含私钥和 API key**（先按字段删除，再按取值在整个文件里清除一遍），但会包含你的钱包地址、跟单的交易者、
+你的成交记录和本机 IP。**不要直接发送 `config.yaml` 或 `.env`。**
 
 ## 决策规则
 
@@ -166,10 +171,13 @@ $0，说明类型或地址填错了。Polymarket 还限制部分地区交易；�
 | `pmwallets-copytrade check [--config file]` | 不下单地检查实盘准备：key、订阅、账户类型、余额、限制。 |
 | `pmwallets-copytrade status [--config file]` | 持仓、今日花费、待确认订单、正在重试的退出。 |
 | `pmwallets-copytrade reconcile [<key> --none \| <key> --filled <股数> --usdc <金额>]` | 人工确认机器人自己无法核实的订单。需在机器人停止时运行。 |
+| `pmwallets-copytrade diagnose [--config file]` | 生成给技术支持的 `pmw-diagnose-<时间>.json.gz`（不含密钥，见上文）。 |
+| `pmwallets-copytrade --version` | 显示版本号。 |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | PMWallets API、WebSocket 和 Polymarket CLOB 都会走代理。 |
 | `<dataDir>/state.<mode>.json` | 持仓、已决策的成交、待确认订单、待退出任务、今日花费。 |
 | `<dataDir>/stream.<mode>.json` | 推送流重启后从哪里继续。 |
-| `<dataDir>/decisions.<mode>.jsonl` | 每一个决策，包括每次跳过及原因。 |
+| `<dataDir>/decisions.<mode>.jsonl` | 每一个决策，包括每次跳过及原因。满 20 MB 轮转，保留 5 份旧文件（`.1` … `.5`）。 |
+| `<dataDir>/bot.<mode>.log` | `run` 打印的全部内容，每个事件一行 JSON，第一行是版本号。满 10 MB 轮转，保留 5 份旧文件。 |
 | `<dataDir>/lock.<mode>` | 同一数据目录、同一模式只允许一个机器人。 |
 
 ## 开发

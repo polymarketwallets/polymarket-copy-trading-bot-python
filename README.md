@@ -42,7 +42,13 @@ polymarket:
 cannot establish by itself whether an order filled, it keeps the order's reservation (no further BUY can exceed
 your limits because of it) and asks you: check polymarket.com and run
 `pmwallets-copytrade reconcile <key> --none` or `--filled <shares> --usdc <usdc>` with the bot stopped. Every decision — including each skip and its
-reason — is appended to `pmw-data/decisions.<mode>.jsonl`.
+reason — is appended to `pmw-data/decisions.<mode>.jsonl`, and everything the bot prints also goes to `pmw-data/bot.<mode>.log`.
+
+**Something went wrong?** Run `pmwallets-copytrade diagnose` and email the `pmw-diagnose-<time>.json.gz` it writes to
+support@pmwallets.com, with a line about what happened. The file has the bot's version, the `check` result, your
+config with the keys removed, the state files and the newest logs and decisions. It contains no private key or API
+key (they are removed by name, then by value from the whole file), but it does show your wallet addresses, the traders
+you copy, your trades and your machine's IP. **Never send `config.yaml` or `.env` themselves.**
 
 ## How it decides
 
@@ -180,10 +186,13 @@ when the account may only close positions.
 | `pmwallets-copytrade check [--config file]` | Verify the trading setup without trading: key, subscriptions, account type, balance, restrictions. |
 | `pmwallets-copytrade status [--config file]` | Open positions, today's spend, orders still being confirmed, exits being retried. |
 | `pmwallets-copytrade reconcile [<key> --none \| <key> --filled <shares> --usdc <usdc>]` | Settle an order the bot could not verify by itself. Run with the bot stopped. |
+| `pmwallets-copytrade diagnose [--config file]` | Write `pmw-diagnose-<time>.json.gz` for support (no keys; see above). |
+| `pmwallets-copytrade --version` | Print the version. |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | Honoured for the PMWallets API, the WebSocket and the Polymarket CLOB. |
 | `<dataDir>/state.<mode>.json` | Positions, decided fills, orders being confirmed, pending exits, today's spend. |
 | `<dataDir>/stream.<mode>.json` | Where the fill stream resumes after a restart. |
-| `<dataDir>/decisions.<mode>.jsonl` | Every decision, including each skip and its reason. |
+| `<dataDir>/decisions.<mode>.jsonl` | Every decision, including each skip and its reason. Rotated at 20 MB, 5 old pieces kept (`.1` … `.5`). |
+| `<dataDir>/bot.<mode>.log` | Everything `run` prints, one JSON line per event, starting with the version. Rotated at 10 MB, 5 old pieces kept. |
 | `<dataDir>/lock.<mode>` | One bot per data directory and mode. |
 
 ## Development

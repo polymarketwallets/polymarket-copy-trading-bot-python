@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from .files import RotatingFile
+
 MAX_REMEMBERED = 20_000
+# a busy trader yields thousands of decisions a day: keep the newest ~120 MB
+DECISIONS_MAX_BYTES = 20 * 1024 * 1024
 
 
 def pos_key(target: str, token_id: str) -> str:
@@ -46,6 +50,7 @@ class BotState:
         d.mkdir(parents=True, exist_ok=True)
         self.file = d / f"state.{mode}.json"
         self.decisions_file = d / f"decisions.{mode}.jsonl"
+        self._decisions = RotatingFile(self.decisions_file, DECISIONS_MAX_BYTES, 5)
         raw: dict[str, Any] = json.loads(self.file.read_text("utf8")) if self.file.exists() else {}
         self.data: dict[str, Any] = {
             "version": 1,
@@ -200,10 +205,9 @@ class BotState:
 
     def log_decision(self, entry: dict[str, Any]) -> None:
         """Append-only audit trail: one line per decision, including every skip and its reason."""
-        with open(self.decisions_file, "a", encoding="utf8") as f:
-            # `at` is the log's own timestamp: no field of an entry may overwrite it
-            rest = {k: v for k, v in entry.items() if k != "at"}
-            f.write(json.dumps({"at": _iso(), **rest}, default=str) + "\n")
+        # `at` is the log's own timestamp: no field of an entry may overwrite it
+        rest = {k: v for k, v in entry.items() if k != "at"}
+        self._decisions.append(json.dumps({"at": _iso(), **rest}, default=str) + "\n")
 
 
 def _alive(pid: int) -> bool:

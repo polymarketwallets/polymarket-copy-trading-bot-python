@@ -3,13 +3,18 @@ from __future__ import annotations
 import re
 
 import asyncio
+import platform
 import shutil
 import sys
+import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from . import __version__
 from .config import check_trading_config, load_config
-from .log import ConsoleLogger
+from .diagnose import diagnose
+from .files import RotatingFile
+from .log import ConsoleLogger, TeeLogger
 from .run import run
 from .state import BotState, InstanceLock
 from .units import fmt_usd, from_micro, js_num, to_micro
@@ -22,6 +27,9 @@ HELP = """pmwallets-copytrade — copy the Polymarket wallets you follow on PMWa
   pmwallets-copytrade status [--config config.yaml]
   pmwallets-copytrade reconcile [<key> --none | <key> --filled <shares> --usdc <usdc>] [--config config.yaml]
       settle an order the bot could not verify by itself (see `status`); run it with the bot stopped
+  pmwallets-copytrade diagnose [--config config.yaml]
+      write pmw-diagnose-<time>.json.gz for support@pmwallets.com: logs, decisions, state and `check`, no keys
+  pmwallets-copytrade --version
 
 Starts in dry-run: nothing is traded until you set `mode: live`.
 Docs: https://pmwallets.com/copy-trading"""
@@ -56,14 +64,17 @@ ACCOUNT_TYPES = ["0 · plain wallet (EOA)", "1 · Proxy Wallet (older email/Goog
 
 
 class _Quiet:
+    def __init__(self, out: Callable[[str], None]) -> None:
+        self._out = out
+
     def info(self, *a: Any, **k: Any) -> None: ...
     def warn(self, *a: Any, **k: Any) -> None: ...
 
     def error(self, msg: str, *a: Any, **k: Any) -> None:
-        print(msg, file=sys.stderr)
+        self._out(msg)
 
 
-async def _check(path: str) -> int:
+async def _check(path: str, out: Callable[[str], None] = print) -> int:
     """Everything live trading depends on, checked without trading: the config, the PMWallets key and its
     subscriptions, the Polymarket credentials, and whether the account the orders would come from is the one holding
     the money. Exit 0 only when all of it is in order."""
@@ -75,10 +86,10 @@ async def _check(path: str) -> int:
     from .wallets import check_funder
 
     def ok(m: str) -> None:
-        print(f"  ✓ {m}")
+        out(f"  ✓ {m}")
 
     def bad(m: str) -> None:
-        print(f"  ✗ {m}")
+        out(f"  ✗ {m}")
 
     problems = 0
     cfg = load_config(path)
@@ -86,7 +97,7 @@ async def _check(path: str) -> int:
     if proxy:
         ok(f"proxy {proxy}")
 
-    print("PMWallets")
+    out("PMWallets")
     try:
         with Client(api_key=cfg.pmwallets.apiKey, base_url=cfg.pmwallets.baseUrl) as client:
             subs = client.subscriptions()
@@ -100,7 +111,7 @@ async def _check(path: str) -> int:
         bad(f"API key: {e}")
         problems += 1
 
-    print("Polymarket")
+    out("Polymarket")
     try:
         check_trading_config(cfg)
     except Exception as e:
@@ -108,7 +119,7 @@ async def _check(path: str) -> int:
         return problems + 1
     sig_type = cfg.polymarket.signatureType
     ok(f"account type {ACCOUNT_TYPES[sig_type]}")
-    gw = PolymarketGateway(cfg.polymarket, _Quiet())
+    gw = PolymarketGateway(cfg.polymarket, _Quiet(out))
     try:
         await gw.connect()
     except Exception as e:
@@ -133,7 +144,7 @@ async def _check(path: str) -> int:
                 else "no exchange contract may spend this account's USDC: finish setting up trading on polymarket.com (make one trade or deposit there) first")
             problems += 1
         elif zero:
-            print(f"  ! no approval yet for {', '.join(zero)} — orders routed through it will fail")
+            out(f"  ! no approval yet for {', '.join(zero)} — orders routed through it will fail")
         else:
             ok("exchange approvals in place")
         if usdc > 0:
@@ -173,7 +184,7 @@ async def _check(path: str) -> int:
         bad(f"restriction lookup failed: {e}")
         problems += 1
 
-    print(f"\n{problems} problem(s): fix them before mode: live" if problems else f"\nready for mode: live (the bot is in {cfg.mode} mode now)")
+    out(f"\n{problems} problem(s): fix them before mode: live" if problems else f"\nready for mode: live (the bot is in {cfg.mode} mode now)")
     return 1 if problems else 0
 
 
@@ -196,12 +207,27 @@ def main(argv: list[str] | None = None) -> None:
             shutil.copyfile(_example(), dest)
             print(f"wrote {dest} — fill in PMW_API_KEY (and the Polymarket keys for live mode), then: pmwallets-copytrade run")
             return
+        if cmd in ("--version", "version"):
+            print(__version__)
+            return
         if cmd == "run":
             cfg = load_config(_arg(argv, "--config", "config.yaml"))
-            code = asyncio.run(run(cfg, ConsoleLogger("--json" in argv)))
+            log = TeeLogger(ConsoleLogger("--json" in argv), RotatingFile(Path(cfg.dataDir) / f"bot.{cfg.mode}.log", 10 * 1024 * 1024, 5))
+            log.info(f"pmwallets-copytrade {__version__}", {"python": platform.python_version(), "platform": sys.platform, "arch": platform.machine()})
+            try:
+                code = asyncio.run(run(cfg, log))
+            except Exception as e:
+                # what stopped the bot belongs in the file too: the terminal that showed it may be long gone
+                log.error("stopped by an error", {"error": str(e), "stack": traceback.format_exc()})
+                raise
             sys.exit(code)
         if cmd == "check":
             sys.exit(asyncio.run(_check(_arg(argv, "--config", "config.yaml"))))
+        if cmd == "diagnose":
+            file = asyncio.run(diagnose(_arg(argv, "--config", "config.yaml"), _check))
+            print(f"wrote {file}\nSend it to support@pmwallets.com with a line about what went wrong. It holds no private key or API key,\n"
+                  "but it does show your wallet addresses, the traders you copy, your trades and this machine's IP.")
+            return
         if cmd == "status":
             cfg = load_config(_arg(argv, "--config", "config.yaml"))
             st = BotState(cfg.dataDir, cfg.mode)
