@@ -79,8 +79,11 @@ rejected order.
   and hands it to you to `reconcile`;
 - resolved markets are swept every 10 minutes so they stop counting against the caps.
 
-**Where the stream comes from.** PMWallets' servers are in the United Kingdom. Run the bot in the UK or elsewhere
-in Europe to receive each fill soonest; the measured latency is published at https://pmwallets.com/latency.
+**Where to run it.** PMWallets' servers are in the United Kingdom, but Polymarket does not accept new API orders
+from the UK, the US, Germany, France and several other countries
+([Polymarket: geographic restrictions](https://docs.polymarket.com/api-reference/geoblock)). **Ireland (AWS
+eu-west-1)** is the nearest region where it does — close to our servers and to Polymarket's in London. `check`
+reports whether your machine's region is allowed. Measured latency: https://pmwallets.com/latency.
 
 **One stream per account, and the bot comes first.** PMWallets keeps one WebSocket per account. A connection made
 with an API key (the bot) takes priority: the live-feed page on pmwallets.com never takes the stream from it — while

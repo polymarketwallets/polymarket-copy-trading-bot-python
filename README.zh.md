@@ -75,8 +75,10 @@ polymarket:
   `reconcile`；
 - 每 10 分钟清理一次已结算的市场，让它们不再占用仓位上限。
 
-**推送从哪里来。** PMWallets 的服务器在英国。把机器人部署在英国或欧洲其他地区，收到成交最快；实测延迟公布在
-https://pmwallets.com/zh/latency。
+**部署在哪里。** PMWallets 的服务器在英国，但 Polymarket 不接受来自英国、美国、德国、法国等国家的新 API 订单
+（[Polymarket：地区限制](https://docs.polymarket.com/api-reference/geoblock)）。**爱尔兰（AWS eu-west-1）**是离得最近、
+又允许 API 下单的地区 —— 离我们的服务器和 Polymarket 在伦敦的服务器都近。`check` 会告诉你所在地区能不能下单。
+实测延迟：https://pmwallets.com/zh/latency。
 
 **每个账户只有一条推送流，机器人优先。** PMWallets 每个账户只保留一条 WebSocket。用 API key 建立的连接（机器人）
 优先：pmwallets.com 上的实时推送页永远不会抢走机器人的流 —— 机器人在线时，推送页会提示并且不连接。同一个账户上的
