@@ -12,6 +12,16 @@ def test_rolls_over_at_the_size_limit_and_keeps_only_keep_old_pieces(tmp_path):
     assert not (tmp_path / "sub" / "bot.log.3").exists()
 
 
+def test_a_crash_between_the_two_steps_of_a_rotation_loses_nothing(tmp_path):
+    p = tmp_path / "bot.log"
+    (tmp_path / "bot.log.rotating").write_text("moved aside\n")
+    (tmp_path / "bot.log.1").write_text("older\n")
+    RotatingFile(p, 100, 3).append("new\n")
+    assert (tmp_path / "bot.log.1").read_text() == "moved aside\n"
+    assert (tmp_path / "bot.log.2").read_text() == "older\n"
+    assert p.read_text() == "new\n"
+
+
 def test_picks_up_the_size_of_a_file_it_did_not_write(tmp_path):
     p = tmp_path / "bot.log"
     p.write_text("x" * 15 + "\n")

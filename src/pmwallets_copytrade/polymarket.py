@@ -18,6 +18,7 @@ from urllib.parse import quote
 import httpx
 
 from .config import PolymarketConfig
+from .secrets import add_secret
 from .log import Logger
 from .units import UNIT, clamp_limit, from_micro, round_buy_shares, round_sell_shares, to_micro
 
@@ -200,6 +201,9 @@ class PolymarketGateway:
                     creds = l1.create_api_key()
                 if not creds or not creds.api_key or not creds.api_secret or not creds.api_passphrase:
                     raise RuntimeError("could not derive Polymarket API credentials")
+            # derived at run time, so no config scan knows them: register them before anything can log them
+            for v in (creds.api_key, creds.api_secret, creds.api_passphrase):
+                add_secret(v)
             return ClobClient(**base, creds=creds)
 
         self.clob = await asyncio.to_thread(build)

@@ -41,13 +41,17 @@ class ConsoleLogger:
 
 class TeeLogger:
     """`inner`, and a JSON line per event in `file` — the log a user can send us when something went wrong, whether or
-    not their terminal kept it. A failed write is dropped: the log must never stop the bot."""
+    not their terminal kept it. Every known credential is removed first (an error message can quote one), and a failed
+    write is dropped: the log must never stop the bot."""
 
     def __init__(self, inner: Logger, file: "RotatingFile") -> None:
         self.inner = inner
         self.file = file
 
-    def _write(self, level: str, msg: str, fields: Optional[dict[str, Any]]) -> None:
+    def _write(self, level: str, m: str, f: Optional[dict[str, Any]]) -> None:
+        from .secrets import redact, redact_text
+        msg = redact_text(m)
+        fields = redact(f) if f else f
         getattr(self.inner, level)(msg, fields)
         try:
             ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")

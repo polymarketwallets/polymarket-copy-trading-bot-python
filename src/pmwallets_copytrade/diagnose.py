@@ -15,12 +15,11 @@ from typing import Any, Awaitable, Callable, Mapping, Optional
 from . import __version__
 from .config import Config, load_config
 from .files import tail_of
+from .secrets import add_config_secrets, add_raw_config_secrets, redact, redact_text
 
 # how much of each log a bundle carries: the newest part, where the trouble usually is
 TAIL_BYTES = 5 * 1024 * 1024
 REDACTED = "<redacted>"
-# environment variables whose values are credentials, whatever the config says
-SECRET_ENV = re.compile(r"KEY|SECRET|PASS|TOKEN|PRIVATE", re.I)
 DEFAULT_DATA_DIR = Config.__dataclass_fields__["dataDir"].default
 
 Check = Callable[[str, Callable[[str], None]], Awaitable[int]]
@@ -34,25 +33,36 @@ async def diagnose(config_path: str, check: Check, *, env: Optional[Mapping[str,
                    now: Optional[datetime] = None, out_dir: str = ".") -> str:
     """Everything support needs to see what the bot did, in one file a user can send: versions, the `check` result,
     the config without its keys, the state files, and the newest logs and decisions of both modes.
-    Keys are removed twice: from the config by field, then by value from the whole bundle — so a key that turned up
-    anywhere else (an error message, a log line) does not leave the machine either."""
+    Keys are removed twice: from the config by field, then by value from every string in the bundle — so a key that
+    turned up anywhere else (an error message, a log line) does not leave the machine either."""
     env = os.environ if env is None else env
     now = now or datetime.now(timezone.utc)
+    raw_config = ""
+    try:
+        raw_config = Path(config_path).read_bytes().decode("utf8", errors="replace")
+    except (OSError, ValueError):
+        pass  # no file: load_config says so
+    add_raw_config_secrets(raw_config)
     cfg: Optional[Config] = None
     config_error: Optional[str] = None
+    # a parser error quotes the line it failed on — cut short, so no value match can catch it: keep the first line
     try:
         cfg = load_config(config_path, env)
     except Exception as e:
-        config_error = str(e)
+        config_error = _first_line(e)
+    add_config_secrets(cfg, env)
 
     lines: list[str] = []
     check_exit: Optional[int] = None
     try:
         check_exit = await check(config_path, lines.append)
     except Exception as e:
-        lines.append(f"check failed: {e}")
+        lines.append(f"check failed: {_first_line(e)}")
 
-    data_dir = cfg.dataDir if cfg else DEFAULT_DATA_DIR
+    # a config that does not load still says where the data is; guessing the default would bundle the wrong files
+    m = re.search(r"^dataDir:\s*(.+?)\s*(?:#.*)?$", raw_config, re.M)
+    raw_data_dir = re.sub(r"^['\"]|['\"]$", "", m.group(1)) if m else None
+    data_dir = cfg.dataDir if cfg else raw_data_dir if raw_data_dir is not None else DEFAULT_DATA_DIR
     files: dict[str, str] = {}
     for mode in ("live", "dry-run"):
         for name in (f"state.{mode}.json", f"stream.{mode}.json"):
@@ -71,13 +81,18 @@ async def diagnose(config_path: str, check: Check, *, env: Optional[Mapping[str,
         "runtime": {"python": platform.python_version(), "platform": sys.platform, "arch": platform.machine()},
         "config": _redact_config(cfg) if cfg else {"error": config_error},
         "check": {"exitCode": check_exit, "output": lines},
-        "dataDir": data_dir,
+        "dataDir": data_dir if cfg else f"{data_dir} ({'read from the config text' if raw_data_dir else 'the default'}: the config did not load)",
         "files": files,
     }
-    text = scrub(json.dumps(bundle, indent=1, default=str, ensure_ascii=False), secrets_of(cfg, env))
+    # strings first, then the text once more: the second pass is only a backstop
+    text = redact_text(json.dumps(redact(bundle), indent=1, default=str, ensure_ascii=False))
     out = Path(out_dir) / f"pmw-diagnose-{now.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json.gz"
     out.write_bytes(gzip.compress(text.encode("utf8")))
     return str(out)
+
+
+def _first_line(e: BaseException) -> str:
+    return str(e).split("\n")[0]
 
 
 def _drop_none(v: Any) -> Any:
@@ -96,25 +111,3 @@ def _redact_config(cfg: Config) -> Any:
     for k in ("privateKey", "apiKey", "apiSecret", "apiPassphrase"):
         d["polymarket"][k] = hide(getattr(cfg.polymarket, k))
     return _drop_none(d)
-
-
-def secrets_of(cfg: Optional[Config], env: Mapping[str, str]) -> list[str]:
-    """every credential value we know of: the config's, and those of environment variables named like one"""
-    vals = [cfg.pmwallets.apiKey, cfg.polymarket.privateKey, cfg.polymarket.apiKey, cfg.polymarket.apiSecret,
-            cfg.polymarket.apiPassphrase] if cfg else []
-    vals += [v for k, v in env.items() if SECRET_ENV.search(k)]
-    out: set[str] = set()
-    for v in vals:
-        # short values would blank out ordinary text; no real credential is this short
-        if not v or len(v) < 8:
-            continue
-        bare = re.sub(r"^0x", "", v, flags=re.I)
-        out.update((v, bare, bare.lower(), bare.upper()))
-    return sorted(out, key=len, reverse=True)
-
-
-def scrub(text: str, secrets: list[str]) -> str:
-    """`text` with every secret value, and any user:password in a URL, replaced"""
-    for s in secrets:
-        text = text.replace(s, REDACTED)
-    return re.sub(r'//[^/@\s"]*:[^/@\s"]*@', "//***@", text)

@@ -6,16 +6,21 @@ from pathlib import Path
 
 
 class RotatingFile:
-    """An append-only file that never grows past `keep + 1` pieces of `max_bytes`: `name` is written, `name.1` is the
-    piece before it, … `name.<keep>` the oldest. A failed rotation keeps appending to the current file — losing the
-    size limit is better than losing the line, and a log must never stop the bot."""
+    """An append-only file that never grows far past `keep + 1` pieces of `max_bytes`: `name` is written, `name.1` is
+    the piece before it, … `name.<keep>` the oldest. Rotation first moves the current file aside under one name; only
+    once that worked are the older pieces shifted, so a rename that keeps failing (Windows, a file open elsewhere)
+    never eats them. After a failure the next attempt waits for another `max_bytes`: a log must never stop the bot,
+    and losing the size limit for a while is better than losing lines."""
 
     def __init__(self, path: str | os.PathLike[str], max_bytes: int, keep: int) -> None:
         self.path = str(path)
         self._max_bytes = max_bytes
         self._keep = keep
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._aside = f"{self.path}.rotating"
         self._size = os.path.getsize(self.path) if os.path.exists(self.path) else 0
+        if os.path.exists(self._aside):
+            self._shift_in()  # a rotation cut short by a crash
 
     def append(self, line: str) -> None:
         data = line.encode("utf8")
@@ -27,16 +32,27 @@ class RotatingFile:
 
     def _rotate(self) -> None:
         try:
+            if os.path.exists(self._aside):
+                self._shift_in()
+            os.replace(self.path, self._aside)
+        except OSError:
+            self._size = 0  # try again after another max_bytes
+            return
+        self._size = 0
+        self._shift_in()
+
+    def _shift_in(self) -> None:
+        """`.rotating` becomes `.1`, the older pieces move up one, the oldest goes"""
+        try:
             oldest = f"{self.path}.{self._keep}"
             if os.path.exists(oldest):
                 os.unlink(oldest)
             for i in range(self._keep - 1, 0, -1):
                 if os.path.exists(f"{self.path}.{i}"):
                     os.replace(f"{self.path}.{i}", f"{self.path}.{i + 1}")
-            os.replace(self.path, f"{self.path}.1")
-            self._size = 0
+            os.replace(self._aside, f"{self.path}.1")
         except OSError:
-            pass  # keep writing where we are
+            pass  # left as .rotating: the next rotation finishes it
 
 
 def tail_of(path: str | os.PathLike[str], max_bytes: int) -> str:

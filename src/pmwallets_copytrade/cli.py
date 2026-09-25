@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 import asyncio
+import os
 import platform
 import shutil
 import sys
@@ -14,6 +15,7 @@ from . import __version__
 from .config import check_trading_config, load_config
 from .diagnose import diagnose
 from .files import RotatingFile
+from .secrets import add_config_secrets
 from .log import ConsoleLogger, TeeLogger
 from .run import run
 from .state import BotState, InstanceLock
@@ -212,6 +214,7 @@ def main(argv: list[str] | None = None) -> None:
             return
         if cmd == "run":
             cfg = load_config(_arg(argv, "--config", "config.yaml"))
+            add_config_secrets(cfg, os.environ)
             log = TeeLogger(ConsoleLogger("--json" in argv), RotatingFile(Path(cfg.dataDir) / f"bot.{cfg.mode}.log", 10 * 1024 * 1024, 5))
             log.info(f"pmwallets-copytrade {__version__}", {"python": platform.python_version(), "platform": sys.platform, "arch": platform.machine()})
             try:

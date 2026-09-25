@@ -5,6 +5,7 @@ import contextlib
 import os
 import re
 import signal
+import traceback
 from pathlib import Path
 from typing import Any, Optional
 
@@ -144,7 +145,9 @@ async def _run_locked(cfg: Config, log: Logger, client: AsyncClient, exchange: P
         elif t == "error":
             log.warn("stream error", {"error": str(e["error"])})
         elif t == "fatal":
-            log.error("stream stopped", {"error": str(e["error"])})
+            err = e["error"]
+            stack = "".join(traceback.format_exception(type(err), err, err.__traceback__)) if isinstance(err, BaseException) else None
+            log.error("stream stopped", {"error": str(err), **({"stack": stack} if stack else {})})
             exit_code["code"] = 1
             stop_event.set()
 
