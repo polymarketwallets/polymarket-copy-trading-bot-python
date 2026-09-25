@@ -52,12 +52,16 @@ def add_raw_config_secrets(raw: str) -> None:
         add_secret(m.group(0))
 
 
+_PMW_KEY = re.compile(r"pmw_[A-Za-z0-9]+_[A-Za-z0-9]+")
+
+
 def redact_text(s: str) -> str:
-    """`s` with every known credential, and any user:password in a URL, replaced"""
+    """`s` with every known credential, any PMWallets key by its shape (one rotated away since it was written is
+    known to no one here), and any user:password in a URL, replaced"""
     for v in _ordered:
         if v in s:
             s = s.replace(v, REDACTED)
-    return _USERINFO.sub("//***@", s)
+    return _USERINFO.sub("//***@", _PMW_KEY.sub(REDACTED, s))
 
 
 def redact(value: Any) -> Any:

@@ -136,6 +136,10 @@ def test_registers_the_keys_of_every_config_it_loads_whatever_the_environment_ca
     assert redact_text(f"{PMW} {KEY}") == "<redacted> <redacted>"
 
 
+def test_removes_a_pmwallets_key_by_its_shape_even_one_no_longer_in_the_config():
+    assert redact_text("old key pmw_zz99yy88_rotatedawaylongago in a 0.1.3 log") == "old key <redacted> in a 0.1.3 log"
+
+
 def test_never_treats_a_short_value_as_a_secret():
     add_config_secrets(None, {"MY_TOKEN": "abc", "PATH": "/usr/bin/longenough"})
     assert redact_text("abc /usr/bin/longenough") == "abc /usr/bin/longenough"
