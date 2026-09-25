@@ -137,6 +137,7 @@ def trade_time_ms(v: Any) -> float:
 
 
 GAMMA_URL = "https://gamma-api.polymarket.com"
+GAMMA_TIMEOUT_S = 2.0  # the whole request: httpx timeouts bound each phase, not the total
 
 _ZERO_FILL = re.compile(r"no orders found|couldn't be fully filled|fully filled or killed", re.I)
 
@@ -239,7 +240,7 @@ class PolymarketGateway:
             return hit[1]
         end: Optional[str] = None
         try:
-            res = await self._http.get(f"{GAMMA_URL}/markets", params={"condition_ids": condition_id}, timeout=2.0)
+            res = await asyncio.wait_for(self._http.get(f"{GAMMA_URL}/markets", params={"condition_ids": condition_id}), GAMMA_TIMEOUT_S)
             rows = res.json() if res.status_code < 300 else None
             row = next((r for r in rows if isinstance(r, dict) and str(r.get("conditionId") or "").lower() == condition_id.lower()), None) \
                 if isinstance(rows, list) else None

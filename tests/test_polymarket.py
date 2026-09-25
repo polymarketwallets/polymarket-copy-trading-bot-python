@@ -218,3 +218,20 @@ async def test_remembers_that_gamma_failed_so_an_outage_costs_one_wait_per_marke
     await g.market(_CID, 0, True)
     assert (await g.market(_CID, 0, True)).endDate == "2026-09-25T00:00:00Z"
     assert v.gamma_calls == 1
+
+
+async def test_gives_up_on_a_slow_gamma_as_a_whole_not_per_phase(monkeypatch):
+    import asyncio
+    from pmwallets_copytrade import polymarket
+    monkeypatch.setattr(polymarket, "GAMMA_TIMEOUT_S", 0.05)
+
+    async def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "clob":
+            return httpx.Response(200, json=_CLOB)
+        await asyncio.sleep(5)
+        return _at("2026-09-25T03:45:00Z")(req)
+
+    g = PolymarketGateway(PolymarketConfig(clobUrl="http://clob", signatureType=0), Silent(),
+                          httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    m = await asyncio.wait_for(g.market(_CID, 0, True), 1.0)
+    assert m.endDate == "2026-09-25T00:00:00Z"
