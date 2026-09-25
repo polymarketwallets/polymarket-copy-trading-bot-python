@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from . import __version__
 from .files import RotatingFile
 from .secrets import redact
 
@@ -63,6 +64,10 @@ class BotState:
             "pendingExits": raw.get("pendingExits") or [],
             "bookedOrderIds": raw.get("bookedOrderIds") or [],
         }
+        # a file no release since redaction wrote: the reasons in it may quote a credential no one here knows any more
+        if self.file.exists() and "writtenBy" not in raw:
+            self.data["pendingOrders"] = [{**p, "needsReconcileUnredacted": True} if p.get("needsReconcile") else p
+                                          for p in self.data["pendingOrders"]]
         # fail closed on a record that lacks what the reconciliation needs: never read a missing amount as 0
         self.data["pendingOrders"] = [
             p if p.get("needsReconcile") or (p.get("shares") and p.get("limit") and p.get("reserveUsdc") is not None)
@@ -79,7 +84,8 @@ class BotState:
         _trim(self.data["bookedOrderIds"], self._booked)
         tmp = self.file.with_name(self.file.name + ".tmp")
         # the reasons kept on unfinished orders quote exchange errors: no credential they echo may land in the file
-        out = {**self.data, "pendingOrders": redact(self.data["pendingOrders"]), "pendingExits": redact(self.data["pendingExits"])}
+        # writtenBy: the release that last wrote the file — from 0.1.4 every free-text field is redacted before it is written
+        out = {**self.data, "writtenBy": __version__, "pendingOrders": redact(self.data["pendingOrders"]), "pendingExits": redact(self.data["pendingExits"])}
         tmp.write_text(json.dumps(out, indent=1))
         os.replace(tmp, self.file)
 
@@ -175,7 +181,15 @@ class BotState:
         self.data["pendingOrders"] = [x for x in self.data["pendingOrders"] if x["key"] != p["key"]] + [p]
 
     def update_pending_order(self, key: str, **patch: Any) -> None:
-        self.data["pendingOrders"] = [{**x, **patch} if x["key"] == key else x for x in self.data["pendingOrders"]]
+        # a reason written now is redacted: the mark that the old one was not goes with it
+        fresh = patch.get("needsReconcile") is not None
+
+        def apply(x: dict[str, Any]) -> dict[str, Any]:
+            y = {**x, **patch}
+            if fresh:
+                y.pop("needsReconcileUnredacted", None)
+            return y
+        self.data["pendingOrders"] = [apply(x) if x["key"] == key else x for x in self.data["pendingOrders"]]
 
     def remove_pending_order(self, key: str) -> None:
         self.data["pendingOrders"] = [x for x in self.data["pendingOrders"] if x["key"] != key]
@@ -211,7 +225,8 @@ class BotState:
         # `at` is the log's own timestamp: no field of an entry may overwrite it
         rest = {k: v for k, v in entry.items() if k != "at"}
         # reasons quote API and signer errors: no credential they might echo may land in the file
-        self._decisions.append(json.dumps(redact({"at": _iso(), **rest}), default=str) + "\n")
+        # `v`: written redacted — a support bundle keeps the text of these lines, and only the structure of older ones
+        self._decisions.append(json.dumps(redact({"at": _iso(), "v": __version__, **rest}), default=str) + "\n")
 
 
 def _alive(pid: int) -> bool:

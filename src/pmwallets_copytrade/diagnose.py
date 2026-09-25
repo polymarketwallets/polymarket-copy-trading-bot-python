@@ -65,14 +65,18 @@ async def diagnose(config_path: str, check: Check, *, env: Optional[Mapping[str,
     data_dir = cfg.dataDir if cfg else raw_data_dir if raw_data_dir is not None else DEFAULT_DATA_DIR
     files: dict[str, str] = {}
     for mode in ("live", "dry-run"):
-        for name in (f"state.{mode}.json", f"stream.{mode}.json"):
-            p = Path(data_dir) / name
-            if p.exists():
-                files[name] = p.read_text("utf8")
-        for name in (f"bot.{mode}.log", f"decisions.{mode}.jsonl"):
-            t = tail_of(Path(data_dir) / name, TAIL_BYTES)
-            if t:
-                files[name] = t
+        state = Path(data_dir) / f"state.{mode}.json"
+        if state.exists():
+            files[f"state.{mode}.json"] = _state_for_support(state.read_text("utf8"))
+        stream = Path(data_dir) / f"stream.{mode}.json"
+        if stream.exists():
+            files[f"stream.{mode}.json"] = stream.read_text("utf8")
+        log = tail_of(Path(data_dir) / f"bot.{mode}.log", TAIL_BYTES)  # only releases that redact write this file
+        if log:
+            files[f"bot.{mode}.log"] = log
+        decisions = tail_of(Path(data_dir) / f"decisions.{mode}.jsonl", TAIL_BYTES)
+        if decisions:
+            files[f"decisions.{mode}.jsonl"] = _decisions_for_support(decisions)
 
     bundle = {
         "format": 1,
@@ -89,6 +93,46 @@ async def diagnose(config_path: str, check: Check, *, env: Optional[Mapping[str,
     out = Path(out_dir) / f"pmw-diagnose-{now.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json.gz"
     out.write_bytes(gzip.compress(text.encode("utf8")))
     return str(out)
+
+
+# What older releases wrote was not redacted, and a credential in it that has since been replaced is known to no one
+# here: of their lines only the structure is kept, never the free text (reasons, errors) that could quote one.
+STRUCTURE = ["at", "eventId", "target", "wallet", "side", "role", "tokenId", "price", "usdc", "tx", "source", "decision",
+             "limit", "orderId", "shares", "fillPrice", "outcome", "won", "pnl", "payout", "fee", "filled", "avg"]
+OMITTED = "(written by a release before 0.1.4: text left out)"
+
+
+def _compact(v: Any) -> str:
+    return json.dumps(v, separators=(",", ":"), ensure_ascii=False)
+
+
+def _decisions_for_support(text: str) -> str:
+    out = []
+    for line in filter(None, text.split("\n")):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            e = None
+        if not isinstance(e, dict):
+            out.append(_compact({"note": OMITTED}))
+        elif e.get("v"):
+            out.append(line)
+        else:
+            out.append(_compact({**{k: e[k] for k in STRUCTURE if k in e}, "note": OMITTED}))
+    return "\n".join(out) + "\n"
+
+
+def _state_for_support(text: str) -> str:
+    try:
+        st = json.loads(text)
+    except ValueError:
+        return OMITTED
+    if not isinstance(st, dict):
+        return OMITTED
+    st["pendingOrders"] = [
+        {**p, "needsReconcile": OMITTED} if isinstance(p, dict) and p.get("needsReconcile") and (not st.get("writtenBy") or p.get("needsReconcileUnredacted"))
+        else p for p in (st.get("pendingOrders") or [])]
+    return json.dumps(st, indent=1, ensure_ascii=False)
 
 
 def _first_line(e: BaseException) -> str:

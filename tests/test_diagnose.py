@@ -203,6 +203,38 @@ def test_keeps_them_out_of_the_state_file_where_unfinished_orders_keep_the_excha
     assert "clobsecretvalue123" in st.pending_orders()[0]["needsReconcile"]  # memory keeps what it had
 
 
+async def test_keeps_only_the_structure_of_what_a_release_before_0_1_4_wrote(tmp_path):
+    """a credential since replaced is known to no one"""
+    from pmwallets_copytrade.state import BotState
+    env = setup(tmp_path)
+    data = tmp_path / "data"
+    # 0.1.3: unredacted decisions and a state file quoting an exchange error with the old CLOB secret
+    (data / "decisions.live.jsonl").write_text('{"at":"2026-09-24T00:00:00Z","decision":"buy_rejected","tx":"0xabc","reason":"401 oldclobsecret999"}\n')
+    (data / "state.live.json").write_text(json.dumps({"version": 1, "positions": {}, "processed": [], "handledTx": [], "spend": {"day": "", "usdc": "0"},
+        "pendingOrders": [{"key": "old", "side": "buy", "orderId": None, "target": "t", "tokenId": "1", "conditionId": "c", "shares": "1", "limit": "1",
+                           "reserveUsdc": "1", "sentAt": 0, "attempts": 1, "needsReconcile": "lookup failed: oldclobsecret999"}],
+        "pendingExits": [], "bookedOrderIds": []}))
+    # 0.1.4 opens it, adds its own lines and a fresh reason, and saves
+    st = BotState(str(data), "live")
+    st.log_decision({"decision": "skipped_slippage", "reason": "ask_0.55_vs_target_0.49"})
+    st.add_pending_order({"key": "new", "side": "buy", "orderId": None, "target": "t", "tokenId": "2", "conditionId": "c", "shares": "1", "limit": "1",
+                          "reserveUsdc": "1", "sentAt": 0, "attempts": 1})
+    st.update_pending_order("new", needsReconcile="the order id never came back")
+    st.save()
+
+    async def check(_, out):
+        return 0
+    b = json.loads(gzip.decompress(open(await diagnose(str(tmp_path / "config.yaml"), check, env=env, out_dir=str(tmp_path)), "rb").read()))
+    assert "oldclobsecret999" not in json.dumps(b)
+    lines = [json.loads(line) for line in b["files"]["decisions.live.jsonl"].strip().split("\n")]
+    assert lines[0]["decision"] == "buy_rejected" and lines[0]["tx"] == "0xabc" and "before 0.1.4" in lines[0]["note"]
+    assert "reason" not in lines[0]
+    assert lines[1]["decision"] == "skipped_slippage" and lines[1]["reason"] == "ask_0.55_vs_target_0.49"
+    orders = json.loads(b["files"]["state.live.json"])["pendingOrders"]
+    assert "before 0.1.4" in next(o for o in orders if o["key"] == "old")["needsReconcile"]
+    assert next(o for o in orders if o["key"] == "new")["needsReconcile"] == "the order id never came back"
+
+
 def test_never_treats_a_short_value_as_a_secret():
     add_config_secrets(None, {"MY_TOKEN": "abc", "PATH": "/usr/bin/longenough"})
     assert redact_text("abc /usr/bin/longenough") == "abc /usr/bin/longenough"
