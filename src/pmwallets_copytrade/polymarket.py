@@ -135,6 +135,8 @@ def trade_time_ms(v: Any) -> float:
         return 0
 
 
+GAMMA_URL = "https://gamma-api.polymarket.com"
+
 _ZERO_FILL = re.compile(r"no orders found|couldn't be fully filled|fully filled or killed", re.I)
 
 
@@ -153,6 +155,7 @@ class PolymarketGateway:
         self._token_to_condition: dict[str, str] = {}
         self._tick_sizes: dict[str, int] = {}
         self._market_cache: dict[str, tuple[float, Market]] = {}
+        self._gamma_ends: dict[str, tuple[float, str]] = {}
 
     @property
     def can_trade(self) -> bool:
@@ -223,12 +226,36 @@ class PolymarketGateway:
         self._token_to_condition[token_id] = cid
         return cid
 
+    async def _gamma_end_date(self, condition_id: str) -> Optional[str]:
+        """When the market settles, from Gamma. The CLOB's `end_date_iso` is only a date for short markets (a 5-minute
+        Bitcoin market ending 03:45Z says 00:00Z), which the end-date filters read as already past — and let through.
+        Cached for an hour once found; None when Gamma cannot say, and the CLOB value is used instead."""
+        from .filters import parse_market_end_date  # filters imports this module
+
+        hit = self._gamma_ends.get(condition_id)
+        if hit and time.time() * 1000 - hit[0] < 3_600_000:
+            return hit[1]
+        try:
+            res = await self._http.get(f"{GAMMA_URL}/markets", params={"condition_ids": condition_id}, timeout=5.0)
+            if res.status_code >= 300:
+                return None
+            rows = res.json()
+            row = next((r for r in rows if isinstance(r, dict) and str(r.get("conditionId") or "").lower() == condition_id.lower()), None) \
+                if isinstance(rows, list) else None
+            end = row.get("endDate") if row else None
+            if not isinstance(end, str) or parse_market_end_date(end) is None:
+                return None
+            self._gamma_ends[condition_id] = (time.time() * 1000, end)
+            return end
+        except Exception:
+            return None
+
     async def market(self, condition_id: str, max_age_ms: float = 30_000) -> Market:
-        """CLOB market by condition id; cached for `max_age_ms`."""
+        """CLOB market by condition id, with Gamma's end date; cached for `max_age_ms`."""
         hit = self._market_cache.get(condition_id)
         if hit and time.time() * 1000 - hit[0] < max_age_ms:
             return hit[1]
-        m = await self._get_json(f"/markets/{quote(condition_id, safe='')}")
+        m, gamma_end = await asyncio.gather(self._get_json(f"/markets/{quote(condition_id, safe='')}"), self._gamma_end_date(condition_id))
         if not isinstance(m, dict) or m.get("error"):
             raise RuntimeError(f"CLOB market {condition_id}: {str(m)[:200]}")
 
@@ -246,7 +273,7 @@ class PolymarketGateway:
             closed=b(m.get("closed"), False),
             active=b(m.get("active"), True),
             acceptingOrders=None if m.get("accepting_orders") is None else b(m.get("accepting_orders"), True),
-            endDate=end if isinstance(end, str) and end else None,
+            endDate=gamma_end or (end if isinstance(end, str) and end else None),
             tokens=[
                 Token(tokenId=str(t.get("token_id") or ""), outcome=str(t.get("outcome") or ""),
                       winner=t.get("winner") if isinstance(t.get("winner"), bool) else None,

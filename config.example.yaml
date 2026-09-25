@@ -50,7 +50,7 @@ copy:
   maxPrice: 0.95
   maxSlippage: 0.03          # skip if the best ask is more than this above what the target paid
   minBookDepthUsdc: 50       # skip if the side we take holds less than this much USDC
-  minSecondsToEndDate: 600   # don't BUY a market that settles within 10 minutes
+  minSecondsToEndDate: 60    # don't BUY a market that settles within a minute
   maxSecondsToEndDate: 0     # don't BUY a market that settles later than this; 0 = no limit
   sellMode: all              # all = exit when the target sells; none = hold to settlement
 

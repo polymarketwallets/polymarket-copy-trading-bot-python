@@ -8,7 +8,7 @@
   "copy": {
     "orderSizeUsdc": 20, "roles": ["taker"], "maxBuysPerOutcome": 3, "maxOpenPositions": 20, "maxOpenPositionsPerTarget": 5,
     "maxFillAgeSec": 90, "minTargetNotionalUsdc": 25, "minPrice": 0.1, "maxPrice": 0.9, "maxSlippage": 0.03,
-    "minBookDepthUsdc": 50, "minSecondsToEndDate": 600, "maxSecondsToEndDate": 0, "sellMode": "none"
+    "minBookDepthUsdc": 50, "minSecondsToEndDate": 60, "maxSecondsToEndDate": 0, "sellMode": "none"
   },
   "risk": { "maxDailySpendUsdc": 500 },
   "dataDir": "./contract-data"

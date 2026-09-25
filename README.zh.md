@@ -151,7 +151,7 @@ $0，说明类型或地址填错了。Polymarket 还限制部分地区交易；�
 | `copy.minPrice` / `copy.maxPrice` | `0.05` / `0.95` | 最优卖价在这个区间内才买。 |
 | `copy.maxSlippage` | `0.03` | 最优卖价比目标成交价高出超过它就跳过（0.03 = 3 美分）。 |
 | `copy.minBookDepthUsdc` | `50` | 我们要吃的那一侧盘口不足这么多 USDC 就跳过。 |
-| `copy.minSecondsToEndDate` | `600` | 离结算不足这么多秒的市场不买。 |
+| `copy.minSecondsToEndDate` | `60` | 离结算不足这么多秒的市场不买。 |
 | `copy.maxSecondsToEndDate` | `0` | 离结算超过这么多秒的市场不买；`0` = 不限。 |
 | `copy.sellMode` | `all` | `all`：目标卖出时，卖掉跟随该目标在该结果上买入的仓位。`none`：持有到结算。 |
 | `risk.maxDailySpendUsdc` | `200` | 每个 UTC 日跟买的总金额上限（含待确认订单）；`0` = 不限。 |

@@ -23,9 +23,10 @@ def ms(s):
 
 
 def test_market_gate():
-    now = ms("2029-12-31T23:55:00Z")
+    now = ms("2029-12-31T23:59:30Z")
     g = market_gate(mkt(), "buy", cfg, now)
-    assert g["ok"] is False and "settles_in_300s" in g["reason"]
+    assert g["ok"] is False and "settles_in_30s" in g["reason"]
+    assert market_gate(mkt(), "buy", cfg, ms("2029-12-31T23:58:59Z")) == {"ok": True}
     assert market_gate(mkt(), "sell", cfg, now) == {"ok": True}
     assert market_gate(mkt(closed=True), "sell", cfg, now)["ok"] is False
     assert market_gate(mkt(endDate=None), "buy", CopyConfig(maxSecondsToEndDate=3600), now)["reason"] == "market_end_date_unknown"

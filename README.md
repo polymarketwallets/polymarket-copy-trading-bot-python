@@ -165,7 +165,7 @@ when the account may only close positions.
 | `copy.minPrice` / `copy.maxPrice` | `0.05` / `0.95` | Only BUY when the best ask is inside this band. |
 | `copy.maxSlippage` | `0.03` | Skip if the best ask is more than this above the target's price (0.03 = 3 cents). |
 | `copy.minBookDepthUsdc` | `50` | Skip if the side we take holds less than this much USDC. |
-| `copy.minSecondsToEndDate` | `600` | Don't BUY a market that settles sooner than this. |
+| `copy.minSecondsToEndDate` | `60` | Don't BUY a market that settles sooner than this. |
 | `copy.maxSecondsToEndDate` | `0` | Don't BUY a market that settles later than this; `0` = no limit. |
 | `copy.sellMode` | `all` | `all`: when the target sells, exit what the bot bought following that target in that outcome. `none`: hold to settlement. |
 | `risk.maxDailySpendUsdc` | `200` | Total USDC of copied BUYs per UTC day, unconfirmed orders included; `0` = no limit. |

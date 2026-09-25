@@ -31,7 +31,7 @@ class CopyConfig:
     maxPrice: float = 0.95
     maxSlippage: float = 0.03  # price units: 0.03 = 3 cents above what the target paid
     minBookDepthUsdc: float = 50
-    minSecondsToEndDate: float = 600
+    minSecondsToEndDate: float = 60
     maxSecondsToEndDate: float = 0  # 0 = no limit
     sellMode: str = "all"  # all | none
 
