@@ -157,24 +157,35 @@ async def test_collateral_approvals():
     assert (await gw({"balance": "5000000", "allowances": "x"}).collateral())[1] == {}
 
 
+
 _CID = "0xe1648bc0c286911bcb5fc228972268d3ca413aa4a6b4a6b03b8c983ba706f957"
 _CLOB = {"condition_id": _CID, "question": "Bitcoin Up or Down - 5m", "closed": False, "active": True, "accepting_orders": True,
          "end_date_iso": "2026-09-25T00:00:00Z", "tokens": []}
 
 
-async def _market_with_gamma(gamma):
-    def handler(req: httpx.Request) -> httpx.Response:
+class _Venues:
+    """a fake CLOB + Gamma; `gamma` can be swapped between calls"""
+    def __init__(self, gamma):
+        self.gamma, self.gamma_calls = gamma, 0
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
         if req.url.host == "clob":
             return httpx.Response(200, json=_CLOB)
-        return gamma(req)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        g = PolymarketGateway(PolymarketConfig(clobUrl="http://clob", signatureType=0), Silent(), http)
-        return await g.market(_CID)
+        self.gamma_calls += 1
+        return self.gamma(req)
+
+
+def _at(end):
+    return lambda req: httpx.Response(200, json=[{"conditionId": _CID, "endDate": end}])
+
+
+def _gw(venues):
+    http = httpx.AsyncClient(transport=httpx.MockTransport(venues))
+    return PolymarketGateway(PolymarketConfig(clobUrl="http://clob", signatureType=0), Silent(), http)
 
 
 async def test_takes_the_end_time_from_gamma_the_clob_gives_short_markets_only_a_date():
-    m = await _market_with_gamma(lambda req: httpx.Response(200, json=[{"conditionId": _CID, "endDate": "2026-09-25T03:45:00Z"}]))
-    assert m.endDate == "2026-09-25T03:45:00Z"
+    assert (await _gw(_Venues(_at("2026-09-25T03:45:00Z"))).market(_CID, 30_000, True)).endDate == "2026-09-25T03:45:00Z"
 
 
 @pytest.mark.parametrize("gamma", [
@@ -184,4 +195,26 @@ async def test_takes_the_end_time_from_gamma_the_clob_gives_short_markets_only_a
     lambda req: httpx.Response(200, json=[{"conditionId": _CID, "endDate": "soon"}]),
 ], ids=["down", "unknown market", "another market", "no usable date"])
 async def test_falls_back_to_the_clob_date_when_gamma_cannot_say(gamma):
-    assert (await _market_with_gamma(gamma)).endDate == "2026-09-25T00:00:00Z"
+    assert (await _gw(_Venues(gamma)).market(_CID, 30_000, True)).endDate == "2026-09-25T00:00:00Z"
+
+
+async def test_asks_gamma_only_when_the_caller_needs_the_end_date():
+    v = _Venues(_at("2026-09-25T03:45:00Z"))
+    assert (await _gw(v).market(_CID, 0)).endDate == "2026-09-25T00:00:00Z"
+    assert v.gamma_calls == 0
+
+
+async def test_follows_an_end_date_that_moves():
+    v = _Venues(_at("2026-09-25T03:45:00Z"))
+    g = _gw(v)
+    assert (await g.market(_CID, 30_000, True)).endDate == "2026-09-25T03:45:00Z"
+    v.gamma = _at("2026-09-26T03:45:00Z")
+    assert (await g.market(_CID, 0, True)).endDate == "2026-09-26T03:45:00Z"
+
+
+async def test_remembers_that_gamma_failed_so_an_outage_costs_one_wait_per_market():
+    v = _Venues(lambda req: httpx.Response(502, text="oops"))
+    g = _gw(v)
+    await g.market(_CID, 0, True)
+    assert (await g.market(_CID, 0, True)).endDate == "2026-09-25T00:00:00Z"
+    assert v.gamma_calls == 1

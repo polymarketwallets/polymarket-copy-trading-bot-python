@@ -62,7 +62,7 @@ class FakeExchange:
     async def condition_id_for(self, token_id):
         return "CID"
 
-    async def market(self, condition_id, max_age_ms=30_000):
+    async def market(self, condition_id, max_age_ms=30_000, with_end_date=False):
         return self.market_
 
     async def orderbook(self, token_id):
