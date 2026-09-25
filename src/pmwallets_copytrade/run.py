@@ -16,6 +16,7 @@ from .log import Logger
 from .polymarket import PolymarketGateway
 from .state import BotState, InstanceLock
 from .units import fmt_usd, to_micro
+from .geo import check_geo
 from .wallets import check_funder
 
 _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -108,6 +109,13 @@ async def _run_locked(cfg: Config, log: Logger, client: AsyncClient, exchange: P
         log.info("polymarket balance", {"usdc": fmt_usd(usdc)})
         if usdc < to_micro(cfg.copy.orderSizeUsdc):
             log.warn("balance is below one order: BUYs will be rejected until you deposit")
+        try:
+            geo = await check_geo()
+        except Exception:
+            geo = None
+        if geo is not None and geo.api != "ok":
+            log.warn(f"this machine's IP is in {geo.country}{'-' + geo.region if geo.region else ''}: Polymarket's API does not accept new positions from there — "
+                     "BUYs will be rejected (Ireland, AWS eu-west-1, is the nearest allowed region)")
         try:
             closed = await exchange.closed_only()
         except Exception:
