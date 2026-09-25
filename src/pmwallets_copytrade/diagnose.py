@@ -42,7 +42,7 @@ async def diagnose(config_path: str, check: Check, *, env: Optional[Mapping[str,
         raw_config = Path(config_path).read_bytes().decode("utf8", errors="replace")
     except (OSError, ValueError):
         pass  # no file: load_config says so
-    add_raw_config_secrets(raw_config)
+    add_raw_config_secrets(raw_config, env)
     cfg: Optional[Config] = None
     config_error: Optional[str] = None
     # a parser error quotes the line it failed on — cut short, so no value match can catch it: keep the first line

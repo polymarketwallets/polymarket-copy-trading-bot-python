@@ -140,6 +140,59 @@ def test_removes_a_pmwallets_key_by_its_shape_even_one_no_longer_in_the_config()
     assert redact_text("old key pmw_zz99yy88_rotatedawaylongago in a 0.1.3 log") == "old key <redacted> in a 0.1.3 log"
 
 
+CLOB_BROKEN = [
+    ("a placeholder for a variable of any name", "polymarket:\n  apiSecret: ${CLOB_CREDENTIAL}\n  : broken\n"),
+    ("junk after a literal", 'polymarket:\n  apiSecret: "clobsecretvalue123" junk\n'),
+]
+
+
+@pytest.mark.parametrize("yaml_text", [y for _, y in CLOB_BROKEN], ids=[n for n, _ in CLOB_BROKEN])
+async def test_keeps_a_clob_credential_out_of_the_bundle_when_the_config_does_not_load(tmp_path, yaml_text):
+    setup(tmp_path)
+    (tmp_path / "broken.yaml").write_text(f"mode: live\ndataDir: {tmp_path / 'data'}\n{yaml_text}")
+    # an older build logged an exchange error quoting it
+    (tmp_path / "data" / "decisions.live.jsonl").write_text('{"reason":"401 for key clobsecretvalue123"}\n')
+    env = {"CLOB_CREDENTIAL": "clobsecretvalue123"}
+
+    async def check(p, out):
+        load_config(p, env)
+        return 0
+    file = await diagnose(str(tmp_path / "broken.yaml"), check, env=env, out_dir=str(tmp_path))
+    assert "clobsecretvalue123" not in gzip.decompress(open(file, "rb").read()).decode("utf8")
+
+
+async def test_a_key_put_where_a_group_belongs_is_not_quoted_back_in_the_bundle_or_anywhere(tmp_path):
+    setup(tmp_path)
+    (tmp_path / "broken.yaml").write_text("mode: live\npolymarket: [apiSecret, clobsecretvalue123]\n")
+
+    async def check(p, out):
+        load_config(p, {})
+        return 0
+    file = await diagnose(str(tmp_path / "broken.yaml"), check, env={}, out_dir=str(tmp_path))
+    assert "clobsecretvalue123" not in gzip.decompress(open(file, "rb").read()).decode("utf8")
+
+
+def test_config_errors_do_not_quote_a_long_value_back(tmp_path):
+    (tmp_path / "c.yaml").write_text("mode: live\npmwallets:\n  apiKey: pmw_a_b\npolymarket: [apiSecret, CLOBSECRET-ROTATED-123456]\n")
+    with pytest.raises(ValueError, match=r"polymarket must be a group of settings, not a \d+-character value"):
+        load_config(str(tmp_path / "c.yaml"), {})
+    (tmp_path / "d.yaml").write_text("mode: live\npmwallets:\n  apiKey: pmw_a_b\nrisk: 10\n")
+    with pytest.raises(ValueError, match='risk must be a group of settings, not "10"'):
+        load_config(str(tmp_path / "d.yaml"), {})
+
+
+def test_keeps_them_out_of_the_state_file_where_unfinished_orders_keep_the_exchange_error(tmp_path):
+    from pmwallets_copytrade.state import BotState
+    add_secret("clobsecretvalue123")
+    st = BotState(str(tmp_path), "live")
+    st.add_pending_order({"key": "k", "side": "buy", "orderId": None, "target": "t", "tokenId": "1", "conditionId": "c", "shares": "1",
+                          "limit": "1", "reserveUsdc": "1", "sentAt": 0, "attempts": 1,
+                          "needsReconcile": "exchange said: bad creds clobsecretvalue123"})
+    st.save()
+    assert "clobsecretvalue123" not in (tmp_path / "state.live.json").read_text()
+    assert "clobsecretvalue123" in st.pending_orders()[0]["needsReconcile"]  # memory keeps what it had
+
+
 def test_never_treats_a_short_value_as_a_secret():
     add_config_secrets(None, {"MY_TOKEN": "abc", "PATH": "/usr/bin/longenough"})
     assert redact_text("abc /usr/bin/longenough") == "abc /usr/bin/longenough"

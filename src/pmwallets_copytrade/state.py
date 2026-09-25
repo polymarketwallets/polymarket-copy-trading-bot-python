@@ -78,7 +78,9 @@ class BotState:
         _trim(self.data["handledTx"], self._handled_tx)
         _trim(self.data["bookedOrderIds"], self._booked)
         tmp = self.file.with_name(self.file.name + ".tmp")
-        tmp.write_text(json.dumps(self.data, indent=1))
+        # the reasons kept on unfinished orders quote exchange errors: no credential they echo may land in the file
+        out = {**self.data, "pendingOrders": redact(self.data["pendingOrders"]), "pendingExits": redact(self.data["pendingExits"])}
+        tmp.write_text(json.dumps(out, indent=1))
         os.replace(tmp, self.file)
 
     def is_processed(self, event_id: str) -> bool:

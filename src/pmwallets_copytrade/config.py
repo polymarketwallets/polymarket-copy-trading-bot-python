@@ -104,6 +104,12 @@ def _js_json(v: Any) -> str:
     return json.dumps(v, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
+def _shown(v: Any) -> str:
+    """a value quoted back in an error: short ones only — a long one may be a key put in the wrong place"""
+    j = _js_json(v)
+    return j if len(j) <= 16 else f"a {len(j)}-character value"
+
+
 def _num(v: Any, path: str, lo: float, hi: float) -> float:
     n = v
     if isinstance(v, str) and v.strip() != "":
@@ -112,14 +118,14 @@ def _num(v: Any, path: str, lo: float, hi: float) -> float:
         except ValueError:
             n = None
     if isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) or n < lo or n > hi:
-        raise ValueError(f"{path} must be a number in [{_js_num(lo)}, {_js_num(hi)}], got {_js_json(v)}")
+        raise ValueError(f"{path} must be a number in [{_js_num(lo)}, {_js_num(hi)}], got {_shown(v)}")
     return n
 
 
 def _int(v: Any, path: str, lo: float, hi: float) -> int:
     n = _num(v, path, lo, hi)
     if n != int(n):
-        raise ValueError(f"{path} must be a whole number, got {_js_json(v)}")
+        raise ValueError(f"{path} must be a whole number, got {_shown(v)}")
     return int(n)
 
 
@@ -173,7 +179,7 @@ def _section(v: Any, path: str, allowed: list[str]) -> Mapping[str, Any]:
     if v is None or v == "":
         return {}
     if not isinstance(v, Mapping):
-        raise ValueError(f"{path} must be a group of settings, not {_js_json(v)}")
+        raise ValueError(f"{path} must be a group of settings, not {_shown(v)}")
     _only_known(v, allowed, f"{path}.")
     return v
 
@@ -215,7 +221,7 @@ def build_config(raw: Any) -> Config:
     if not isinstance(c.dataDir, str) or not c.dataDir.strip():
         raise ValueError("dataDir is empty: remove the line to use ./pmw-data, or give a directory")
     if c.mode not in ("dry-run", "live"):
-        raise ValueError(f"mode must be dry-run or live, got {c.mode!r}")
+        raise ValueError(f"mode must be dry-run or live, got {_shown(c.mode)}")
     if not isinstance(c.pmwallets.apiKey, str) or not c.pmwallets.apiKey.startswith("pmw_"):
         raise ValueError("pmwallets.apiKey is required (pmw_…, from https://pmwallets.com/keys)")
 

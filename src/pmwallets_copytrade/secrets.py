@@ -4,6 +4,7 @@ run time. Values are removed from each string before it is serialized, so JSON e
 Same registry as the Node bot's secrets.ts."""
 from __future__ import annotations
 
+import os
 import re
 from typing import TYPE_CHECKING, Any, Mapping, Optional
 
@@ -17,6 +18,8 @@ REDACTED = "<redacted>"
 SECRET_NAME = re.compile(r"KEY|SECRET|PASS|TOKEN|PRIVATE", re.I)
 _RAW_FIELD = re.compile(r"^\s*[\w-]*(?:key|secret|pass|token|private)[\w-]*\s*:\s*(.+)$", re.I | re.M | re.A)
 _RAW_TOKEN = re.compile(r"pmw_[A-Za-z0-9]+_[A-Za-z0-9]+|(?:0x)?[0-9a-fA-F]{64}")
+_PLACEHOLDER = re.compile(r"\$\{(\w+)\}", re.A)
+_FIRST_SCALAR = re.compile(r"""(?:"([^"]*)"|'([^']*)'|([^\s"'#,\]}]+))""")
 _USERINFO = re.compile(r'//[^/@\s"]*:[^/@\s"]*@')
 
 
@@ -41,13 +44,22 @@ def add_config_secrets(cfg: Optional["Config"], env: Mapping[str, str]) -> None:
             add_secret(v)
 
 
-def add_raw_config_secrets(raw: str) -> None:
+def add_raw_config_secrets(raw: str, env: Optional[Mapping[str, str]] = None) -> None:
     """Credential-looking values in a config file's raw text, for when it does not load: the value of every key named
     like a credential, and any PMWallets key or 32-byte hex (a private key; a config holds no transaction hash)."""
+    env = os.environ if env is None else env
     for m in _RAW_FIELD.finditer(raw):
-        v = re.sub(r"^['\"]|['\"]$", "", re.sub(r"\s+#.*$", "", m.group(1)).strip())
-        if not re.fullmatch(r"\$\{\w+\}", v, re.A):
-            add_secret(v)
+        v = re.sub(r"\s+#.*$", "", m.group(1)).strip()
+        # a placeholder names the variable holding the key, whatever that variable is called
+        for p in _PLACEHOLDER.finditer(v):
+            add_secret(env.get(p.group(1)))
+        if _PLACEHOLDER.fullmatch(v):
+            continue
+        add_secret(re.sub(r"^['\"]|['\"]$", "", v))
+        # a line that does not parse may carry junk after the key: the first scalar on it is the likeliest key
+        first = _FIRST_SCALAR.match(v)
+        if first:
+            add_secret(next((g for g in first.groups() if g is not None), None))
     for m in _RAW_TOKEN.finditer(raw):
         add_secret(m.group(0))
 
