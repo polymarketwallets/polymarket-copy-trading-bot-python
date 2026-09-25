@@ -148,6 +148,10 @@ CLOB_BROKEN = [
     ("a double-quoted key with a placeholder", 'polymarket:\n  "apiSecret": ${CLOB_CREDENTIAL}\n  nonsense: 1\n'),
     ("a single-quoted key with a placeholder", "polymarket:\n  'apiPassphrase': ${CLOB_CREDENTIAL}\n  nonsense: 1\n"),
     ("a flow mapping with a placeholder", "polymarket: {apiSecret: ${CLOB_CREDENTIAL}}\nnonsense: 1\n"),
+    ("a quoted key given twice, the first holding it", 'polymarket:\n  "apiSecret": clobsecretvalue123\n  "apiSecret": secondsecret67890\n'),
+    ("a block scalar given twice, the first holding it",
+     "polymarket:\n  apiSecret: >-\n    clobsecretvalue123\n  apiSecret: >-\n    secondsecret67890\n"),
+    ("an alias to a value anchored elsewhere", "stash: &k clobsecretvalue123\npolymarket:\n  apiSecret: *k\n"),
     ("a literal block scalar in a flow of lines", "polymarket:\n  apiPassphrase: |-\n    clobsecretvalue123\nnonsense: 1\n"),
 ]
 

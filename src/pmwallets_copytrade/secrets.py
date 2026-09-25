@@ -75,28 +75,39 @@ _CREDENTIAL_NAME = re.compile(r"key|secret|pass|token|private", re.I)
 
 
 def _parse(text: str) -> Any:
-    """the text as YAML, every scalar a string and a repeated key tolerated; _UNPARSED when it is not YAML"""
+    """the text's YAML node graph (every scalar a string, a key given twice kept twice); _UNPARSED when it is not YAML"""
     import yaml
     try:
-        return yaml.load(text, Loader=yaml.BaseLoader)
+        return yaml.compose(text, Loader=yaml.BaseLoader)
     except Exception:
         return _UNPARSED
 
 
-def _walk(node: Any, credential: bool, env: Mapping[str, str]) -> None:
-    if isinstance(node, str):
+def _walk(node: Any, credential: bool, env: Mapping[str, str], seen: Optional[set[tuple[int, bool]]] = None, depth: int = 0) -> None:
+    """Every scalar under a credential-named key, read off the node graph rather than a constructed object: an object
+    keeps only the last of a key given twice, and a config that fails for that very reason is when this scan matters.
+    An alias is the node its anchor marks, so `apiSecret: *a` reaches it wherever it stands."""
+    import yaml
+    seen = set() if seen is None else seen
+    # aliases can point back up the tree: a node already walked with the same flag has nothing new to give
+    if depth > 50 or node is None or (id(node), credential) in seen:
+        return
+    seen.add((id(node), credential))
+    if isinstance(node, yaml.ScalarNode):
         if not credential:
             return
-        for p in _PLACEHOLDER.finditer(node):
+        v = str(node.value or "")
+        for p in _PLACEHOLDER.finditer(v):
             add_secret(env.get(p.group(1)))
-        if not _PLACEHOLDER.fullmatch(node.strip()):
-            add_secret(node.strip())
-    elif isinstance(node, list):
-        for v in node:
-            _walk(v, credential, env)
-    elif isinstance(node, dict):
-        for k, v in node.items():
-            _walk(v, credential or bool(_CREDENTIAL_NAME.search(str(k))), env)
+        if not _PLACEHOLDER.fullmatch(v.strip()):
+            add_secret(v.strip())
+    elif isinstance(node, yaml.MappingNode):
+        for k, v in node.value:  # every pair, a key given twice included
+            name = str(k.value or "") if isinstance(k, yaml.ScalarNode) else ""
+            _walk(v, credential or bool(_CREDENTIAL_NAME.search(name)), env, seen, depth + 1)
+    elif isinstance(node, yaml.SequenceNode):
+        for v in node.value:
+            _walk(v, credential, env, seen, depth + 1)
 
 
 _PMW_KEY = re.compile(r"pmw_[A-Za-z0-9]+_[A-Za-z0-9]+")
