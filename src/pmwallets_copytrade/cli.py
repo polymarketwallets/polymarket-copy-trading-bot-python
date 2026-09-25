@@ -71,7 +71,7 @@ async def _check(path: str) -> int:
 
     from .polymarket import PolymarketGateway
     from .run import _proxy_from_env, funder_mismatch
-    from .geo import check_geo
+    from .geo import check_geo, describe_geo
     from .wallets import check_funder
 
     def ok(m: str) -> None:
@@ -155,15 +155,11 @@ async def _check(path: str) -> int:
         problems += 1
     try:
         g = await check_geo()
-        where = f"{g.country}{'-' + g.region if g.region else ''} ({g.ip})"
-        if g.api == "blocked":
-            bad(f"this machine's IP is in {where}: Polymarket accepts no orders from there (sanctioned region)")
-            problems += 1
-        elif g.api == "close-only":
-            bad(f"this machine's IP is in {where}: Polymarket's API only lets you close positions from there — run the bot from another country (Ireland, AWS eu-west-1, is the nearest allowed region)")
-            problems += 1
+        if g.api == "ok":
+            ok(describe_geo(g))
         else:
-            ok(f"this machine's IP is in {where}: API orders allowed" + (" (the polymarket.com website is restricted here, the API is not)" if g.websiteRestricted else ""))
+            bad(describe_geo(g))
+            problems += 1
     except Exception as e:
         bad(f"region lookup failed: {e}")
         problems += 1

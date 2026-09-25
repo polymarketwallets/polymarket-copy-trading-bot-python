@@ -30,6 +30,9 @@ class GeoVerdict:
     region: str
     ip: str
     websiteRestricted: bool
+    # the endpoint reports a restriction for a region missing from the lists above — Polymarket has restricted
+    # somewhere new since this release; treated as close-only until the lists are updated
+    unlisted: bool = False
 
 
 def classify_geo(country: str, region: str) -> str:
@@ -61,6 +64,24 @@ async def check_geo(http: Optional[httpx.AsyncClient] = None) -> GeoVerdict:
     region = str(b.get("region") if b.get("region") is not None else "")
     if not country:
         raise RuntimeError("geoblock lookup returned no country")
+    blocked = b.get("blocked")
+    if not isinstance(blocked, bool):
+        raise RuntimeError("geoblock lookup returned no blocked flag")
     k = classify_geo(country, region)
-    return GeoVerdict(api="ok" if k == "website-only" else k, country=country, region=region,
-                      ip=str(b.get("ip") if b.get("ip") is not None else ""), websiteRestricted=k != "ok")
+    unlisted = k == "ok" and blocked
+    api = "close-only" if unlisted else "ok" if k == "website-only" else k
+    return GeoVerdict(api=api, country=country, region=region, ip=str(b.get("ip") if b.get("ip") is not None else ""),
+                      websiteRestricted=k != "ok" or blocked, unlisted=unlisted)
+
+
+def describe_geo(g: GeoVerdict) -> str:
+    """one line saying what this region allows, shared by `check` and `run`"""
+    where = f"this machine's IP is in {g.country}{'-' + g.region if g.region else ''}{f' ({g.ip})' if g.ip else ''}"
+    move = "run the bot from another country (Ireland, AWS eu-west-1, is the nearest allowed region)"
+    if g.api == "blocked":
+        return f"{where}: Polymarket accepts no orders at all from there, closing positions included — {move}"
+    if g.unlisted:
+        return f"{where}: Polymarket reports this region as restricted and it is not on this bot's list — assume the API only lets you close positions; {move}"
+    if g.api == "close-only":
+        return f"{where}: Polymarket's API only lets you close positions from there, BUYs are rejected — {move}"
+    return f"{where}: API orders allowed" + (" (the polymarket.com website is restricted here, the API is not)" if g.websiteRestricted else "")
