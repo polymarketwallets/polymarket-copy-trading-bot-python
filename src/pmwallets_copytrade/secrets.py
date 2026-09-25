@@ -48,6 +48,12 @@ def add_raw_config_secrets(raw: str, env: Optional[Mapping[str, str]] = None) ->
     """Credential-looking values in a config file's raw text, for when it does not load: the value of every key named
     like a credential, and any PMWallets key or 32-byte hex (a private key; a config holds no transaction hash)."""
     env = os.environ if env is None else env
+    # valid YAML that fails only the bot's own checks: the parser sees every form a key can take (quoted names, block
+    # scalars, flow maps); the line scan below is for text the parser cannot read at all
+    # placeholders are filled in first, as load_config does: `{apiSecret: ${X}}` only parses once `${X}` is gone
+    tree = _parse(_PLACEHOLDER.sub(lambda p: env.get(p.group(1), p.group(0)), raw))
+    if tree is not _UNPARSED:
+        _walk(tree, False, env)
     for m in _RAW_FIELD.finditer(raw):
         v = re.sub(r"\s+#.*$", "", m.group(1)).strip()
         # a placeholder names the variable holding the key, whatever that variable is called
@@ -62,6 +68,35 @@ def add_raw_config_secrets(raw: str, env: Optional[Mapping[str, str]] = None) ->
             add_secret(next((g for g in first.groups() if g is not None), None))
     for m in _RAW_TOKEN.finditer(raw):
         add_secret(m.group(0))
+
+
+_UNPARSED = object()
+_CREDENTIAL_NAME = re.compile(r"key|secret|pass|token|private", re.I)
+
+
+def _parse(text: str) -> Any:
+    """the text as YAML, every scalar a string and a repeated key tolerated; _UNPARSED when it is not YAML"""
+    import yaml
+    try:
+        return yaml.load(text, Loader=yaml.BaseLoader)
+    except Exception:
+        return _UNPARSED
+
+
+def _walk(node: Any, credential: bool, env: Mapping[str, str]) -> None:
+    if isinstance(node, str):
+        if not credential:
+            return
+        for p in _PLACEHOLDER.finditer(node):
+            add_secret(env.get(p.group(1)))
+        if not _PLACEHOLDER.fullmatch(node.strip()):
+            add_secret(node.strip())
+    elif isinstance(node, list):
+        for v in node:
+            _walk(v, credential, env)
+    elif isinstance(node, dict):
+        for k, v in node.items():
+            _walk(v, credential or bool(_CREDENTIAL_NAME.search(str(k))), env)
 
 
 _PMW_KEY = re.compile(r"pmw_[A-Za-z0-9]+_[A-Za-z0-9]+")
