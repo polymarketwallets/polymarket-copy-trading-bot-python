@@ -107,6 +107,11 @@ silently ignored.
 Give the bot **an account of its own**, holding only what you are willing to let it trade. This is the setup we
 recommend and document; follow it step by step:
 
+> **Only this setup has been tested with real money** — a MetaMask (or other browser-wallet) account connected
+> on polymarket.com, signing with that wallet's own private key. Accounts made with email or Google, the older
+> Safe / Proxy accounts and plain wallets are supported by the code, but we have not run them live. If you can,
+> make a new account as below rather than reusing one of those.
+
 1. **Create a new wallet account** in MetaMask (or Rabby): account menu → *Add account*. Use it for nothing but this.
 2. **Sign up on [polymarket.com](https://polymarket.com)** by connecting that wallet (choose MetaMask in the
    sign-in dialog). Every account created on polymarket.com since 2026-05-04 gets a **Deposit Wallet** — that is
@@ -126,13 +131,18 @@ never be able to touch money you did not mean to put at risk. The key never leav
 
 ### Already have an account? Which type it is (`polymarket.signatureType`)
 
+Only the first row, for an account signed up by connecting MetaMask or another browser wallet, has been tested
+live. The other rows follow Polymarket's documentation but are untested with this bot: run `check`, then
+`dry-run`, then live with a very small `copy.orderSizeUsdc`, and tell support@pmwallets.com if anything fails.
+
 The type decides which key signs your orders and which address holds the money
 ([Polymarket: wallet types](https://docs.polymarket.com/trading/wallets-auth)). It has **no default** — the bot
 refuses to trade until you set it, because signing as the wrong type gets every order rejected.
 
 | `signatureType` | Your account is this if… | `privateKey` | `funderAddress` |
 |---|---|---|---|
-| **3** · Deposit Wallet | it was created on polymarket.com **on or after 2026-05-04** (any sign-up method) | the wallet you sign in with | the account wallet in the profile menu |
+| **3** · Deposit Wallet ✅ tested | it was created on polymarket.com **on or after 2026-05-04** by connecting MetaMask or another browser wallet | that browser wallet's key | the account wallet in the profile menu (not the MetaMask address) |
+| **3** · Deposit Wallet (untested) | it was created on polymarket.com **on or after 2026-05-04** with email or Google | the key polymarket.com lets you export for the account's sign-in wallet | the account wallet in the profile menu |
 | **2** · Safe Wallet | it was created **before 2026-05-04** by connecting MetaMask, Rabby or another browser wallet | that browser wallet's key | the account wallet in the profile menu (not the MetaMask address) |
 | **1** · Proxy Wallet | it was created **before 2026-05-04** with email or Google (Magic) | the Magic key polymarket.com lets you export (look for *Export Private Key* in the settings) | the account wallet in the profile menu |
 | **0** · plain wallet | you trade from your own address, with the funds on that address, not through a polymarket.com account | that address's key | the same address (may be omitted) |

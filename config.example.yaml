@@ -14,6 +14,7 @@ pmwallets:
 polymarket:                              # read in live mode and by `pmwallets-copytrade check`
   # Recommended: a separate account just for the bot — a new MetaMask account, signed up on polymarket.com
   # by connecting it (see "Set up a Polymarket account for the bot" in the README). That is type 3.
+  # It is the only setup tested with real money; the other types below are supported but untested.
   #
   # signatureType has no default; the bot will not trade until it is set:
   #   3 = Deposit Wallet: any account created on polymarket.com on or after 2026-05-04

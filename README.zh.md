@@ -98,6 +98,10 @@ support@pmwallets.com。文件里有机器人版本、`check` 结果、去掉密
 
 给机器人**单独开一个账户**，里面只放你愿意让它去交易的钱。这是我们推荐并写成文档的做法，照着一步步来：
 
+> **只有这种方式经过真金白银的实测** —— 用 MetaMask(或其他浏览器钱包)连接 polymarket.com 注册的账户，用这个钱包自己的私钥签名。
+> 邮箱或 Google 注册的账户、较早的 Safe / Proxy 账户以及普通钱包，代码上支持，但我们没有实盘跑过。能新建的话，请按下面的步骤新建，
+> 不要复用那几类账户。
+
 1. **新建一个钱包账户**：在 MetaMask（或 Rabby）里点账户菜单 → *添加账户*。这个账户只用来干这一件事。
 2. **在 [polymarket.com](https://polymarket.com) 用这个钱包注册**：在登录弹窗里选择 MetaMask 连接。
    2026-05-04 之后在 polymarket.com 创建的账户都是 **Deposit Wallet**，也就是 `signatureType: 3`。
@@ -114,12 +118,16 @@ support@pmwallets.com。文件里有机器人版本、`check` 结果、去掉密
 
 ### 已经有账户？判断它是哪种类型（`polymarket.signatureType`）
 
+只有第一行(用 MetaMask 等浏览器钱包连接注册的账户)实盘测过。其余几行按 Polymarket 官方文档写成，但没有用这个机器人实测过：
+请先跑 `check`,再跑 `dry-run`,再用很小的 `copy.orderSizeUsdc` 上实盘，遇到问题发邮件到 support@pmwallets.com。
+
 类型决定用哪把私钥签名、钱放在哪个地址（[Polymarket 官方说明](https://docs.polymarket.com/trading/wallets-auth)）。
 这一项**没有默认值** —— 不填机器人就拒绝实盘，因为按错误的类型签名，所有订单都会被拒。
 
 | `signatureType` | 你的账户属于这种，如果…… | `privateKey` | `funderAddress` |
 |---|---|---|---|
-| **3** · Deposit Wallet | 是 **2026-05-04 当天或之后**在 polymarket.com 创建的（任何注册方式） | 你登录用的那个钱包的私钥 | 个人资料菜单里的账户钱包地址 |
+| **3** · Deposit Wallet ✅ 已实测 | 是 **2026-05-04 当天或之后**在 polymarket.com 用 MetaMask 等浏览器钱包连接创建的 | 这个浏览器钱包的私钥 | 个人资料菜单里的账户钱包地址（不是 MetaMask 地址） |
+| **3** · Deposit Wallet（未实测） | 是 **2026-05-04 当天或之后**在 polymarket.com 用邮箱或 Google 创建的 | polymarket.com 允许你导出的该账户登录钱包的私钥 | 个人资料菜单里的账户钱包地址 |
 | **2** · Safe Wallet | 是 **2026-05-04 之前**用 MetaMask、Rabby 等浏览器钱包连接注册的 | 这个浏览器钱包的私钥 | 个人资料菜单里的账户钱包地址（不是 MetaMask 地址） |
 | **1** · Proxy Wallet | 是 **2026-05-04 之前**用邮箱或 Google（Magic）注册的 | polymarket.com 允许你导出的 Magic 私钥（在设置里找 *Export Private Key*） | 个人资料菜单里的账户钱包地址 |
 | **0** · 普通钱包 | 你直接用自己的地址交易，钱就在这个地址上，不经过 polymarket.com 账户 | 这个地址的私钥 | 同一个地址（可不填） |
